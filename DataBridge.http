@@ -1,0 +1,201 @@
+@baseUrl = http://localhost:5288
+
+# The import and customer requests need a signed-in session and, to change anything,
+# an antiforgery token. Run A, paste its token below, run B, then run A again and
+# paste the new token, because a token belongs to the user who requested it.
+@csrfToken = paste-token-here
+@email = paste-email-here
+@password = paste-password-here
+
+### A. Get an antiforgery token, which also stores its cookie
+GET {{baseUrl}}/api/account/antiforgery
+
+### B. Sign in. Expect a 302 and a cookie, which your client must keep and send.
+POST {{baseUrl}}/account/login
+Content-Type: application/x-www-form-urlencoded
+X-CSRF-TOKEN: {{csrfToken}}
+
+email={{email}}&password={{password}}
+
+### C. Sign out
+POST {{baseUrl}}/account/logout
+X-CSRF-TOKEN: {{csrfToken}}
+
+# Run request 1 first, then set this to the id it returns.
+@batchId = 1
+
+### Health check
+GET {{baseUrl}}/api/health
+Accept: application/json
+
+### 1. Upload: expect 202 with batchId and statusUrl. Poll request 3 until job.stage is Completed.
+POST {{baseUrl}}/api/imports
+X-CSRF-TOKEN: {{csrfToken}}
+Content-Type: multipart/form-data; boundary=DataBridgeBoundary
+
+--DataBridgeBoundary
+Content-Disposition: form-data; name="file"; filename="customers-sample.csv"
+Content-Type: text/csv
+
+< ./customers-sample.csv
+--DataBridgeBoundary--
+
+### 1b. Upload the same data as an Excel workbook: expect 202, then 4 rows, numbered like request 1
+POST {{baseUrl}}/api/imports
+X-CSRF-TOKEN: {{csrfToken}}
+Content-Type: multipart/form-data; boundary=DataBridgeBoundary
+
+--DataBridgeBoundary
+Content-Disposition: form-data; name="file"; filename="customers-sample.xlsx"
+Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet
+
+< ./customers-sample.xlsx
+--DataBridgeBoundary--
+
+### 2. List batches: expect 200
+GET {{baseUrl}}/api/imports?page=1&pageSize=25
+
+### 3. Progress and batch details: expect 200.
+# job.stage is Queued, Parsing, Saving, Validating, Completed or Failed.
+# job.processedRows, job.totalRows and job.error appear when known.
+# Header positions start at 0.
+GET {{baseUrl}}/api/imports/{{batchId}}
+
+### 4. Save the mapping using zero-based column positions: expect 200
+PUT {{baseUrl}}/api/imports/{{batchId}}/mapping
+X-CSRF-TOKEN: {{csrfToken}}
+Content-Type: application/json
+
+{
+  "nameColumn": 0,
+  "companyColumn": 1,
+  "emailColumn": 2,
+  "phoneColumn": 3,
+  "locationColumn": 4,
+  "statusColumn": 5,
+  "notesColumn": 6
+}
+
+### 5. Mapped preview, first page: expect 200 with source rows 2 and 4
+GET {{baseUrl}}/api/imports/{{batchId}}/rows?page=1&pageSize=2
+
+### 6. Mapped preview, second page: expect 200 with source rows 5 and 6
+GET {{baseUrl}}/api/imports/{{batchId}}/rows?page=2&pageSize=2
+
+### 7. Unknown batch: expect 404
+GET {{baseUrl}}/api/imports/999999
+
+### 8. Invalid mapping, emailColumn is missing: expect 400
+PUT {{baseUrl}}/api/imports/{{batchId}}/mapping
+X-CSRF-TOKEN: {{csrfToken}}
+Content-Type: application/json
+
+{
+  "nameColumn": 0,
+  "statusColumn": 5
+}
+
+### 9. Invalid mapping, the file has no column 99: expect 400
+PUT {{baseUrl}}/api/imports/{{batchId}}/mapping
+X-CSRF-TOKEN: {{csrfToken}}
+Content-Type: application/json
+
+{
+  "nameColumn": 99,
+  "emailColumn": 2,
+  "statusColumn": 5
+}
+
+### 10. Invalid paging, pageSize is over 100: expect 400
+GET {{baseUrl}}/api/imports/{{batchId}}/rows?page=1&pageSize=101
+
+### 11. Queue validation: expect 202. Poll request 3 until status is ReadyForReview.
+# Running it again replaces the old issues. A batch with no mapping returns 400.
+POST {{baseUrl}}/api/imports/{{batchId}}/validate
+X-CSRF-TOKEN: {{csrfToken}}
+
+### 12. Validate an unknown batch: expect 404
+POST {{baseUrl}}/api/imports/999999/validate
+X-CSRF-TOKEN: {{csrfToken}}
+
+# The review requests below use values from the row preview in request 5.
+@rowId = 1
+@customerVersion = AAAAAAAAB9E=
+
+### 13. Correct a row. This replaces all seven drafts: expect 200 with the row revalidated
+PUT {{baseUrl}}/api/imports/{{batchId}}/rows/{{rowId}}
+X-CSRF-TOKEN: {{csrfToken}}
+Content-Type: application/json
+
+{
+  "draftName": "Ana Ruiz",
+  "draftCompany": "Northwind",
+  "draftEmail": "ana@example.com",
+  "draftPhone": "555-0101",
+  "draftLocation": "Queens",
+  "draftStatus": "Active",
+  "draftNotes": "Prefers email, not phone"
+}
+
+### 14. Approve a New row for insert: expect 200
+PUT {{baseUrl}}/api/imports/{{batchId}}/rows/{{rowId}}/decision
+X-CSRF-TOKEN: {{csrfToken}}
+Content-Type: application/json
+
+{
+  "decision": "Approved"
+}
+
+### 15. Approve a Conflict as an update: expect 200, or 409 if the customer has changed
+PUT {{baseUrl}}/api/imports/{{batchId}}/rows/{{rowId}}/decision
+X-CSRF-TOKEN: {{csrfToken}}
+Content-Type: application/json
+
+{
+  "decision": "Approved",
+  "confirmUpdate": true,
+  "customerVersion": "{{customerVersion}}"
+}
+
+### 16. Reject a row with a reason: expect 200
+PUT {{baseUrl}}/api/imports/{{batchId}}/rows/{{rowId}}/decision
+X-CSRF-TOKEN: {{csrfToken}}
+Content-Type: application/json
+
+{
+  "decision": "Rejected",
+  "reason": "Already in the customer list"
+}
+
+### 17. Commit once every row has a decision: expect 200 with the summary.
+# Repeating it returns the same summary. Stale approvals return 409.
+POST {{baseUrl}}/api/imports/{{batchId}}/commit
+X-CSRF-TOKEN: {{csrfToken}}
+
+### 18. Review and commit history: expect 200
+GET {{baseUrl}}/api/imports/{{batchId}}/audit?page=1&pageSize=100
+
+### 19. Committed customers, filtered: expect 200
+GET {{baseUrl}}/api/customers?page=1&pageSize=25&location=Queens&status=Active
+
+### 20. Unknown status filter: expect 400
+GET {{baseUrl}}/api/customers?status=Archived
+
+### 21. AI search: expect 200, outcome Applied, and the filters it used.
+# Needs a signed-in user and the OpenAI:ApiKey user secret. Without the key, expect 503.
+POST {{baseUrl}}/api/customers/search/ai
+X-CSRF-TOKEN: {{csrfToken}}
+Content-Type: application/json
+
+{
+  "question": "Show me active customers in Queens"
+}
+
+### 22. AI search with an unsupported request: expect 200, outcome Unsupported, and no changes
+POST {{baseUrl}}/api/customers/search/ai
+X-CSRF-TOKEN: {{csrfToken}}
+Content-Type: application/json
+
+{
+  "question": "Delete all customers"
+}

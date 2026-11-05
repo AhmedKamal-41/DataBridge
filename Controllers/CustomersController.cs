@@ -1,0 +1,53 @@
+using DataBridge.DTOs;
+using DataBridge.Interfaces;
+using DataBridge.Models;
+using DataBridge.Services;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
+
+namespace DataBridge.Controllers;
+
+[ApiController]
+[Route("api/customers")]
+[Authorize(Roles = AppRoles.AnyRole)]
+public class CustomersController : ControllerBase
+{
+    private readonly ICustomerService _customerService;
+    private readonly ICustomerAiSearchService _aiSearchService;
+
+    public CustomersController(ICustomerService customerService, ICustomerAiSearchService aiSearchService)
+    {
+        _customerService = customerService;
+        _aiSearchService = aiSearchService;
+    }
+
+    // GET /api/customers?page=1&pageSize=25&location=Queens&status=Active
+    [HttpGet]
+    public async Task<IActionResult> GetCustomers(
+        [FromQuery] PageRequest pageRequest,
+        [FromQuery] string? location,
+        [FromQuery] CustomerStatus? status)
+    {
+        var filters = new CustomerSearchFilters { Location = location, Status = status };
+
+        return Ok(await _customerService.GetCustomersAsync(pageRequest.Page, pageRequest.PageSize, filters));
+    }
+
+    // POST /api/customers/search/ai
+    [HttpPost("search/ai")]
+    public async Task<IActionResult> SearchWithAi(CustomerAiSearchRequest request)
+    {
+        try
+        {
+            return Ok(await _aiSearchService.SearchAsync(request.Question!));
+        }
+        catch (AiSearchException exception)
+        {
+            int statusCode = exception.ErrorType == AiSearchErrorType.InvalidOutput
+                ? StatusCodes.Status502BadGateway
+                : StatusCodes.Status503ServiceUnavailable;
+
+            return Problem(detail: exception.Message, statusCode: statusCode);
+        }
+    }
+}
