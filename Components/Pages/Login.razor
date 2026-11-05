@@ -1,0 +1,31 @@
+@page "/login"
+@attribute [ExcludeFromInteractiveRouting]
+
+<PageTitle>Sign in</PageTitle>
+
+<section class="panel sign-in">
+    <h1>Sign in</h1>
+
+    @if (Error == "locked")
+    {
+        <div class="notice error" role="alert">This account is locked after too many failed attempts. Try again later.</div>
+    }
+    else if (Error != null)
+    {
+        <div class="notice error" role="alert">The email or password is incorrect.</div>
+    }
+
+    @* A plain form: signing in has to set a cookie, which needs a normal page request. *@
+    <form method="post" action="account/login" data-enhance="false">
+        <AntiforgeryToken />
+        <input type="hidden" name="returnUrl" value="@ReturnUrl" />
+        <label class="field">Email <input type="email" name="email" autocomplete="username" required /></label>
+        <label class="field">Password <input type="password" name="password" autocomplete="current-password" required /></label>
+        <button type="submit">Sign in</button>
+    </form>
+</section>
+
+@code {
+    [SupplyParameterFromQuery] public string? ReturnUrl { get; set; }
+    [SupplyParameterFromQuery] public string? Error { get; set; }
+}

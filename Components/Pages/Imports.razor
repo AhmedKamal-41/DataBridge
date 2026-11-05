@@ -1,0 +1,145 @@
+@page "/imports"
+@attribute [Authorize(Roles = AppRoles.AdminOrReviewer)]
+@inject DataBridgeApiClient ApiClient
+@inject NavigationManager Navigation
+
+<PageTitle>Imports</PageTitle>
+
+<h1>Imports</h1>
+
+<AuthorizeView Roles="@AppRoles.Admin">
+<section class="panel">
+    <h2>Upload a CSV or Excel file</h2>
+
+    @if (uploadError != null)
+    {
+        <div class="notice error" role="alert">@uploadError</div>
+    }
+
+    <div class="actions">
+        <InputFile OnChange="SelectFile" accept=".csv,.xlsx" aria-label="CSV or Excel file" />
+        <button type="button" disabled="@(selectedFile == null || isUploading)" @onclick="UploadAsync">
+            @(isUploading ? "Uploading..." : "Upload")
+        </button>
+    </div>
+</section>
+</AuthorizeView>
+
+<section class="panel">
+    <h2>Batches</h2>
+
+    @if (errorMessage != null)
+    {
+        <div class="notice error" role="alert">@errorMessage</div>
+        <button type="button" class="secondary" @onclick="() => LoadBatchesAsync(page)">Try again</button>
+    }
+    else if (batches == null)
+    {
+        <p class="muted" role="status">Loading batches...</p>
+    }
+    else if (batches.Items.Count == 0)
+    {
+        <p class="muted">No files have been uploaded yet.</p>
+    }
+    else
+    {
+        <div class="table-scroll">
+            <table>
+                <thead>
+                    <tr><th>ID</th><th>File</th><th>Status</th><th>Job</th><th>Rows</th></tr>
+                </thead>
+                <tbody>
+                    @foreach (ImportBatchDto batch in batches.Items)
+                    {
+                        <tr>
+                            <td>@batch.Id</td>
+                            <td><a href="imports/@batch.Id">@batch.FileName</a></td>
+                            <td>@batch.Status</td>
+                            <td>@batch.Job.Stage</td>
+                            <td>@batch.RowCount</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+        <Pager Page="batches.Page" TotalPages="batches.TotalPages" OnPageChanged="LoadBatchesAsync" />
+    }
+</section>
+
+@code {
+    private const int PageSize = 25;
+
+    // Only the most this page will read from the browser. The configured upload
+    // limit is enforced by ImportService, which returns its own clear error.
+    private const long MaxBrowserFileBytes = 29_000_000;
+
+    private PagedResponse<ImportBatchDto>? batches;
+    private int page = 1;
+    private string? errorMessage;
+    private IBrowserFile? selectedFile;
+    private bool isUploading;
+    private string? uploadError;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadBatchesAsync(1);
+    }
+
+    private async Task LoadBatchesAsync(int newPage)
+    {
+        page = newPage;
+        errorMessage = null;
+
+        try
+        {
+            batches = await ApiClient.GetBatchesAsync(page, PageSize);
+        }
+        catch (ApiException exception)
+        {
+            errorMessage = exception.Message;
+        }
+    }
+
+    private void SelectFile(InputFileChangeEventArgs args)
+    {
+        selectedFile = args.File;
+        uploadError = null;
+    }
+
+    private async Task UploadAsync()
+    {
+        if (selectedFile == null)
+        {
+            return;
+        }
+
+        if (selectedFile.Size > MaxBrowserFileBytes)
+        {
+            uploadError = $"{selectedFile.Name} is too large to upload.";
+            return;
+        }
+
+        isUploading = true;
+        uploadError = null;
+
+        try
+        {
+            await using Stream fileStream = selectedFile.OpenReadStream(MaxBrowserFileBytes);
+            ImportAcceptedDto accepted = await ApiClient.UploadAsync(selectedFile.Name, fileStream);
+
+            Navigation.NavigateTo($"imports/{accepted.BatchId}");
+        }
+        catch (ApiException exception)
+        {
+            uploadError = exception.Message;
+        }
+        catch (IOException)
+        {
+            uploadError = "The file could not be read from your browser. Choose it again and retry.";
+        }
+        finally
+        {
+            isUploading = false;
+        }
+    }
+}

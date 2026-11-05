@@ -1,0 +1,28 @@
+@inject BrowserSession Session
+
+<Router AppAssembly="typeof(Program).Assembly" NotFoundPage="typeof(Pages.NotFound)">
+    <Found Context="routeData">
+        <AuthorizeRouteView RouteData="routeData" DefaultLayout="typeof(Layout.MainLayout)">
+            <NotAuthorized Context="authorization">
+                <NotAuthorizedMessage User="authorization.User" />
+            </NotAuthorized>
+            <Authorizing>
+                <p class="muted" role="status">Checking your access...</p>
+            </Authorizing>
+        </AuthorizeRouteView>
+        <FocusOnNavigate RouteData="routeData" Selector="h1" />
+    </Found>
+</Router>
+
+@code {
+    // Set by App.razor. Blazor encrypts these before they reach the browser, and the
+    // circuit gets them back when it starts.
+    [Parameter] public string? CookieHeader { get; set; }
+    [Parameter] public string? AntiforgeryToken { get; set; }
+
+    protected override void OnInitialized()
+    {
+        Session.CookieHeader = CookieHeader;
+        Session.AntiforgeryToken = AntiforgeryToken;
+    }
+}

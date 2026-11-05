@@ -1,0 +1,490 @@
+@page "/imports/{BatchId:int}"
+@attribute [Authorize(Roles = AppRoles.AdminOrReviewer)]
+@inject DataBridgeApiClient ApiClient
+@implements IDisposable
+
+<PageTitle>Import @BatchId</PageTitle>
+
+<p><a href="imports">&larr; All imports</a></p>
+
+@if (isNotFound)
+{
+    <h1>Import not found</h1>
+    <p class="muted">There is no import batch with ID @BatchId.</p>
+}
+else if (batchError != null)
+{
+    <h1>Import @BatchId</h1>
+    <div class="notice error" role="alert">@batchError</div>
+    <button type="button" class="secondary" @onclick="LoadPageAsync">Try again</button>
+}
+else if (batch == null)
+{
+    <h1>Import @BatchId</h1>
+    <p class="muted" role="status">Loading batch...</p>
+}
+else
+{
+    <h1>@batch.FileName</h1>
+    <p>
+        <span class="badge @(IsImportFailed ? "bad" : "")" data-testid="batch-status">@(IsImportFailed ? "Failed" : batch.Status)</span>
+        <span class="muted">@batch.RowCount row(s)</span>
+    </p>
+
+    @if (batch.Job.IsActive || batch.Job.Stage == "Failed")
+    {
+        <section class="panel" data-testid="job-progress">
+            <h2>@(batch.Job.Kind == "Parse" ? "Importing the file" : "Validating the rows")</h2>
+            @if (batch.Job.Stage == "Failed")
+            {
+                <div class="notice error" role="alert" data-testid="job-error">@batch.Job.Error</div>
+            }
+            else
+            {
+                <p role="status">
+                    <span data-testid="job-stage">@batch.Job.Stage</span>
+                    @if (batch.Job.TotalRows != null)
+                    {
+                        <span data-testid="job-rows"> &middot; @batch.Job.ProcessedRows of @batch.Job.TotalRows rows</span>
+                    }
+                </p>
+                @if (batch.Job.TotalRows > 0)
+                {
+                    <progress max="@batch.Job.TotalRows" value="@batch.Job.ProcessedRows"></progress>
+                }
+                @if (batch.Job.Error != null)
+                {
+                    <p class="muted">@batch.Job.Error</p>
+                }
+            }
+            @if (pollError != null)
+            {
+                <p class="muted" role="status">@pollError Still trying.</p>
+            }
+        </section>
+    }
+
+    @if (actionError != null)
+    {
+        <div class="notice error" role="alert">@actionError</div>
+    }
+    @if (actionMessage != null)
+    {
+        <div class="notice success" role="status">@actionMessage</div>
+    }
+
+    @if (IsCommitted)
+    {
+        <section class="panel">
+            <h2>Commit summary</h2>
+            <dl class="summary" data-testid="commit-summary">
+                <div><dt>Inserted</dt><dd>@batch.CommitSummary!.CustomersCreated</dd></div>
+                <div><dt>Updated</dt><dd>@batch.CommitSummary.CustomersUpdated</dd></div>
+                <div><dt>Rejected</dt><dd>@batch.CommitSummary.RowsRejected</dd></div>
+            </dl>
+            <p class="muted">Committed @batch.CommitSummary.CommittedAtUtc.ToString("yyyy-MM-dd HH:mm") UTC</p>
+        </section>
+    }
+    else if (batch.Status != "Pending")
+    {
+        @if (isAdmin)
+        {
+        <section class="panel">
+            <h2>Map columns</h2>
+            <div class="field-grid">
+                @foreach (MappingField field in mappingFields)
+                {
+                    <label class="field" @key="field.Name">
+                        @field.Name@(field.IsRequired ? " (required)" : "")
+                        <select @bind="field.Column">
+                            <option value="">Not mapped</option>
+                            @for (int i = 0; i < batch.Headers.Count; i++)
+                            {
+                                <option value="@i">@batch.Headers[i]</option>
+                            }
+                        </select>
+                    </label>
+                }
+            </div>
+            <div class="actions">
+                <button type="button" disabled="@isBusy" @onclick="SaveMappingAsync">Save mapping</button>
+            </div>
+        </section>
+        }
+
+        <section class="panel">
+            <h2>Validation</h2>
+            @if (batch.Mapping == null)
+            {
+                <p class="muted">An Admin needs to map the columns before this batch can be validated.</p>
+            }
+            <button type="button" class="secondary" disabled="@(isBusy || batch.Mapping == null || batch.Job.IsActive)" @onclick="ValidateAsync">
+                @(batch.Status == "ReadyForReview" ? "Validate again" : "Validate batch")
+            </button>
+        </section>
+    }
+
+    @if (batch.Status != "Pending")
+    {
+    <section class="panel">
+        <h2>Rows</h2>
+
+        @if (rowsError != null)
+        {
+            <div class="notice error" role="alert">@rowsError</div>
+            <button type="button" class="secondary" @onclick="() => LoadRowsAsync(rowsPage)">Try again</button>
+        }
+        else if (rows == null)
+        {
+            <p class="muted" role="status">Loading rows...</p>
+        }
+        else if (rows.Items.Count == 0)
+        {
+            <p class="muted">There are no rows on this page.</p>
+            <Pager Page="rows.Page" TotalPages="rows.TotalPages" OnPageChanged="LoadRowsAsync" />
+        }
+        else
+        {
+            @if (batch.Mapping == null)
+            {
+                <p class="muted">Map the columns to fill in the draft values.</p>
+            }
+
+            @foreach (ImportRowDto row in rows.Items)
+            {
+                <ImportRowCard @key="row.Id"
+                               Row="row"
+                               BatchId="BatchId"
+                               Headers="batch.Headers"
+                               CanReview="batch.Status == StatusReadyForReview"
+                               OnChanged="HandleRowChangedAsync" />
+            }
+            <Pager Page="rows.Page" TotalPages="rows.TotalPages" OnPageChanged="LoadRowsAsync" />
+        }
+    </section>
+    }
+
+    @if (batch.Status == StatusReadyForReview)
+    {
+        <section class="panel">
+            <h2>Commit</h2>
+            <p class="muted">Every row needs a decision. Committing saves the approved rows to Customers.</p>
+            @if (isAdmin)
+            {
+                <button type="button" disabled="@isBusy" @onclick="CommitAsync">Commit batch</button>
+            }
+            else
+            {
+                <p class="muted">An Admin commits this batch when the review is finished.</p>
+            }
+        </section>
+    }
+
+    <section class="panel">
+        <h2>Audit history</h2>
+
+        @if (auditError != null)
+        {
+            <div class="notice error" role="alert">@auditError</div>
+            <button type="button" class="secondary" @onclick="() => LoadAuditAsync(auditPage)">Try again</button>
+        }
+        else if (audit == null)
+        {
+            <p class="muted" role="status">Loading history...</p>
+        }
+        else if (audit.Items.Count == 0)
+        {
+            <p class="muted">Nothing has been recorded for this batch yet.</p>
+        }
+        else
+        {
+            <div class="table-scroll">
+                <table data-testid="audit">
+                    <thead>
+                        <tr><th>When (UTC)</th><th>Action</th><th>By</th><th>Row ID</th><th>Customer</th><th>Details</th></tr>
+                    </thead>
+                    <tbody>
+                        @foreach (ImportAuditEntryDto entry in audit.Items)
+                        {
+                            <tr>
+                                <td>@entry.TimestampUtc.ToString("yyyy-MM-dd HH:mm:ss")</td>
+                                <td>@entry.Action</td>
+                                <td>@(entry.ActorName ?? entry.Actor)</td>
+                                <td>@entry.ImportRowId</td>
+                                <td>@entry.CustomerId</td>
+                                <td>@entry.Details</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+            <Pager Page="audit.Page" TotalPages="audit.TotalPages" OnPageChanged="LoadAuditAsync" />
+        }
+    </section>
+}
+
+@code {
+    private const int RowsPageSize = 25;
+    private const int AuditPageSize = 25;
+    private const string StatusReadyForReview = "ReadyForReview";
+    private static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(1);
+
+    [Parameter] public int BatchId { get; set; }
+
+    // Only decides which buttons to show. The API makes the real permission check.
+    [CascadingParameter] private Task<AuthenticationState> AuthenticationState { get; set; } = null!;
+
+    private ImportBatchDto? batch;
+    private PagedResponse<ImportRowDto>? rows;
+    private PagedResponse<ImportAuditEntryDto>? audit;
+    private List<MappingField> mappingFields = new List<MappingField>();
+    private int rowsPage = 1;
+    private int auditPage = 1;
+    private bool isAdmin;
+    private bool isBusy;
+    private bool isNotFound;
+    private string? batchError;
+    private string? rowsError;
+    private string? auditError;
+    private string? actionError;
+    private string? actionMessage;
+    private string? pollError;
+    private bool isPolling;
+    private readonly CancellationTokenSource pageClosed = new CancellationTokenSource();
+
+    private bool IsCommitted => batch?.CommitSummary != null;
+
+    // A batch stays Pending when its file can't be read, which would look as if it
+    // were still running.
+    private bool IsImportFailed => batch?.Status == "Pending" && batch.Job.Stage == "Failed";
+
+    protected override async Task OnParametersSetAsync()
+    {
+        AuthenticationState state = await AuthenticationState;
+        isAdmin = state.User.IsInRole(AppRoles.Admin);
+
+        await LoadPageAsync();
+    }
+
+    private async Task LoadPageAsync()
+    {
+        batch = null;
+        batchError = null;
+        isNotFound = false;
+
+        await ReloadEverythingAsync();
+    }
+
+    private async Task ReloadEverythingAsync()
+    {
+        try
+        {
+            batch = await ApiClient.GetBatchAsync(BatchId);
+            FillMappingFields(batch);
+        }
+        catch (ApiException exception) when (exception.StatusCode == StatusCodes.Status404NotFound)
+        {
+            isNotFound = true;
+            return;
+        }
+        catch (ApiException exception)
+        {
+            batchError = exception.Message;
+            return;
+        }
+
+        await LoadRowsAsync(rowsPage);
+        await LoadAuditAsync(auditPage);
+
+        if (batch.Job.IsActive && !isPolling)
+        {
+            _ = PollWhileJobRunsAsync();
+        }
+    }
+
+    // Only the batch is replaced on each tick, so choices the reviewer hasn't saved
+    // yet stay on screen. Everything reloads when the job ends.
+    private async Task PollWhileJobRunsAsync()
+    {
+        isPolling = true;
+
+        try
+        {
+            using var timer = new PeriodicTimer(PollInterval);
+
+            while (await timer.WaitForNextTickAsync(pageClosed.Token))
+            {
+                try
+                {
+                    ImportBatchDto latest = await ApiClient.GetBatchAsync(BatchId);
+                    pollError = null;
+
+                    if (!latest.Job.IsActive)
+                    {
+                        isPolling = false;
+                        await ReloadEverythingAsync();
+                        StateHasChanged();
+                        return;
+                    }
+
+                    batch = latest;
+                }
+                catch (ApiException exception)
+                {
+                    pollError = exception.Message;
+                }
+
+                StateHasChanged();
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // The reviewer left the page.
+        }
+        finally
+        {
+            isPolling = false;
+        }
+    }
+
+    public void Dispose()
+    {
+        pageClosed.Cancel();
+        pageClosed.Dispose();
+    }
+
+    private void FillMappingFields(ImportBatchDto loadedBatch)
+    {
+        var fields = new List<MappingField>
+        {
+            new MappingField("Name", true),
+            new MappingField("Company", false),
+            new MappingField("Email", true),
+            new MappingField("Phone", false),
+            new MappingField("Location", false),
+            new MappingField("Status", true),
+            new MappingField("Notes", false)
+        };
+
+        foreach (MappingField field in fields)
+        {
+            if (loadedBatch.Mapping != null && loadedBatch.Mapping.TryGetValue(field.Name, out int column))
+            {
+                field.Column = column;
+            }
+        }
+
+        mappingFields = fields;
+    }
+
+    private async Task LoadRowsAsync(int page)
+    {
+        rowsPage = page;
+        rowsError = null;
+
+        try
+        {
+            rows = await ApiClient.GetRowsAsync(BatchId, rowsPage, RowsPageSize);
+        }
+        catch (ApiException exception)
+        {
+            rowsError = exception.Message;
+        }
+    }
+
+    private async Task LoadAuditAsync(int page)
+    {
+        auditPage = page;
+        auditError = null;
+
+        try
+        {
+            audit = await ApiClient.GetAuditAsync(BatchId, auditPage, AuditPageSize);
+        }
+        catch (ApiException exception)
+        {
+            auditError = exception.Message;
+        }
+    }
+
+    private async Task SaveMappingAsync()
+    {
+        var request = new SaveColumnMappingRequest
+        {
+            NameColumn = GetSelectedColumn("Name"),
+            CompanyColumn = GetSelectedColumn("Company"),
+            EmailColumn = GetSelectedColumn("Email"),
+            PhoneColumn = GetSelectedColumn("Phone"),
+            LocationColumn = GetSelectedColumn("Location"),
+            StatusColumn = GetSelectedColumn("Status"),
+            NotesColumn = GetSelectedColumn("Notes")
+        };
+
+        await RunActionAsync(() => ApiClient.SaveMappingAsync(BatchId, request),
+            "The mapping was saved. Validate the batch to check the rows.");
+    }
+
+    private int? GetSelectedColumn(string fieldName)
+    {
+        return mappingFields.First(field => field.Name == fieldName).Column;
+    }
+
+    private async Task ValidateAsync()
+    {
+        await RunActionAsync(() => ApiClient.ValidateAsync(BatchId), "Validation is queued. Review opens when it finishes.");
+    }
+
+    private async Task CommitAsync()
+    {
+        await RunActionAsync(() => ApiClient.CommitAsync(BatchId), "The batch was committed.");
+    }
+
+    private async Task RunActionAsync(Func<Task> sendRequest, string successMessage)
+    {
+        isBusy = true;
+        actionError = null;
+        actionMessage = null;
+
+        try
+        {
+            await sendRequest();
+            actionMessage = successMessage;
+            await ReloadEverythingAsync();
+        }
+        catch (ApiException exception)
+        {
+            actionError = exception.Message;
+
+            // A 409 means someone else changed the data, so show the current values.
+            if (exception.StatusCode == StatusCodes.Status409Conflict)
+            {
+                await ReloadEverythingAsync();
+            }
+        }
+        finally
+        {
+            isBusy = false;
+        }
+    }
+
+    private async Task HandleRowChangedAsync(string? message)
+    {
+        actionError = null;
+        actionMessage = message;
+
+        await ReloadEverythingAsync();
+    }
+
+    private class MappingField
+    {
+        public string Name { get; }
+        public bool IsRequired { get; }
+        public int? Column { get; set; }
+
+        public MappingField(string name, bool isRequired)
+        {
+            Name = name;
+            IsRequired = isRequired;
+        }
+    }
+}

@@ -1,0 +1,189 @@
+@page "/customers"
+@attribute [Authorize(Roles = AppRoles.AnyRole)]
+@inject DataBridgeApiClient ApiClient
+
+<PageTitle>Customers</PageTitle>
+
+<h1>Customers</h1>
+
+<section class="panel">
+    <h2>Ask in plain English</h2>
+    <div class="field-row" style="margin-bottom: 0">
+        <label class="field ai-question">
+            Question
+            <input @bind="aiQuestion" @bind:event="oninput" maxlength="500" placeholder="Show me active customers in Queens" />
+        </label>
+        <button type="button" disabled="@(isAiSearching || string.IsNullOrWhiteSpace(aiQuestion))" @onclick="SearchWithAiAsync">
+            @(isAiSearching ? "Searching..." : "Search")
+        </button>
+    </div>
+    @if (aiError != null)
+    {
+        <div class="notice error" role="alert" style="margin: .75rem 0 0" data-testid="ai-error">@aiError</div>
+    }
+    @if (aiMessage != null)
+    {
+        <div class="notice info" role="status" style="margin: .75rem 0 0" data-testid="ai-message">@aiMessage</div>
+    }
+</section>
+
+<section class="panel">
+    <h2>Filter</h2>
+    <div class="field-row" style="margin-bottom: 0">
+        <label class="field">Location <input @bind="locationFilter" /></label>
+        <label class="field">
+            Status
+            <select @bind="statusFilter">
+                <option value="">All</option>
+                <option value="Active">Active</option>
+                <option value="Inactive">Inactive</option>
+            </select>
+        </label>
+        <button type="button" disabled="@isLoading" @onclick="() => LoadCustomersAsync(1)">Apply filters</button>
+        <button type="button" class="secondary" disabled="@isLoading" @onclick="ClearFiltersAsync">Clear</button>
+    </div>
+</section>
+
+<section class="panel">
+    @if (errorMessage != null)
+    {
+        <div class="notice error" role="alert">@errorMessage</div>
+        <button type="button" class="secondary" @onclick="() => LoadCustomersAsync(page)">Try again</button>
+    }
+    else if (customers == null)
+    {
+        <p class="muted" role="status">Loading customers...</p>
+    }
+    else if (customers.Items.Count == 0)
+    {
+        @if (appliedFilters != null)
+        {
+            <AppliedFilterList Filters="appliedFilters" />
+        }
+        <p class="muted">No customers match these filters.</p>
+    }
+    else
+    {
+        @if (appliedFilters != null)
+        {
+            <AppliedFilterList Filters="appliedFilters" />
+        }
+        @if (customers.TotalCount > customers.Items.Count && appliedFilters != null)
+        {
+            <p class="muted" data-testid="ai-capped">Showing the first @customers.Items.Count of @customers.TotalCount customers. Narrow the search to see the rest.</p>
+        }
+        else
+        {
+            <p class="muted">@customers.TotalCount customer(s)</p>
+        }
+        <div class="table-scroll">
+            <table data-testid="customers">
+                <thead>
+                    <tr><th>Name</th><th>Company</th><th>Email</th><th>Phone</th><th>Location</th><th>Status</th><th>Notes</th></tr>
+                </thead>
+                <tbody>
+                    @foreach (CustomerDto customer in customers.Items)
+                    {
+                        <tr>
+                            <td>@customer.Name</td>
+                            <td>@customer.Company</td>
+                            <td>@customer.Email</td>
+                            <td>@customer.Phone</td>
+                            <td>@customer.Location</td>
+                            <td>@customer.Status</td>
+                            <td>@customer.Notes</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+        @if (appliedFilters == null)
+        {
+            <Pager Page="customers.Page" TotalPages="customers.TotalPages" Disabled="isLoading" OnPageChanged="LoadCustomersAsync" />
+        }
+    }
+</section>
+
+@code {
+    private const int PageSize = 25;
+
+    private PagedResponse<CustomerDto>? customers;
+    private int page = 1;
+    private string locationFilter = string.Empty;
+    private string statusFilter = string.Empty;
+    private bool isLoading;
+    private string? errorMessage;
+    private string aiQuestion = string.Empty;
+    private bool isAiSearching;
+    private string? aiError;
+    private string? aiMessage;
+
+    // Set while the table shows an AI search, so its filters appear beside the results.
+    private CustomerSearchFilters? appliedFilters;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadCustomersAsync(1);
+    }
+
+    private async Task ClearFiltersAsync()
+    {
+        locationFilter = string.Empty;
+        statusFilter = string.Empty;
+
+        await LoadCustomersAsync(1);
+    }
+
+    private async Task SearchWithAiAsync()
+    {
+        isAiSearching = true;
+        aiError = null;
+        aiMessage = null;
+
+        try
+        {
+            CustomerAiSearchResultDto result = await ApiClient.SearchCustomersWithAiAsync(aiQuestion);
+
+            // Only a real search replaces the table. Otherwise the current list stays.
+            if (result.Outcome == "Applied")
+            {
+                customers = result.Customers;
+                appliedFilters = result.Filters;
+                errorMessage = null;
+            }
+            else
+            {
+                aiMessage = result.Message;
+            }
+        }
+        catch (ApiException exception)
+        {
+            aiError = exception.Message;
+        }
+        finally
+        {
+            isAiSearching = false;
+        }
+    }
+
+    private async Task LoadCustomersAsync(int newPage)
+    {
+        page = newPage;
+        isLoading = true;
+        errorMessage = null;
+        appliedFilters = null;
+
+        try
+        {
+            customers = await ApiClient.GetCustomersAsync(page, PageSize, locationFilter, statusFilter);
+        }
+        catch (ApiException exception)
+        {
+            errorMessage = exception.Message;
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+}

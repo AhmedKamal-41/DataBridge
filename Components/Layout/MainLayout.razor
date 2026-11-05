@@ -1,0 +1,39 @@
+﻿@inherits LayoutComponentBase
+@inject BrowserSession Session
+
+<header class="site-header">
+    <a class="site-name" href="">DataBridge</a>
+    <nav aria-label="Main">
+        <AuthorizeView Roles="@AppRoles.AdminOrReviewer">
+            <NavLink href="imports">Imports</NavLink>
+        </AuthorizeView>
+        <AuthorizeView Roles="@AppRoles.AnyRole">
+            <NavLink href="customers">Customers</NavLink>
+        </AuthorizeView>
+    </nav>
+    <div class="site-account">
+        <AuthorizeView>
+            <Authorized>
+                <span data-testid="signed-in-user">@context.User.Identity?.Name</span>
+                @* A plain form: signing out has to clear a cookie, which needs a normal page request. *@
+                <form method="post" action="account/logout" data-enhance="false">
+                    <input type="hidden" name="__RequestVerificationToken" value="@Session.AntiforgeryToken" />
+                    <button type="submit" class="secondary">Sign out</button>
+                </form>
+            </Authorized>
+            <NotAuthorized>
+                <a href="login">Sign in</a>
+            </NotAuthorized>
+        </AuthorizeView>
+    </div>
+</header>
+
+<main class="page">
+    @Body
+</main>
+
+<div id="blazor-error-ui" data-nosnippet>
+    An unhandled error has occurred.
+    <a href="." class="reload">Reload</a>
+    <span class="dismiss">🗙</span>
+</div>

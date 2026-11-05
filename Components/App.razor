@@ -1,0 +1,52 @@
+﻿@using Microsoft.AspNetCore.Antiforgery
+@using Microsoft.Extensions.Options
+@inject IAntiforgery Antiforgery
+@inject IOptions<AntiforgeryOptions> AntiforgeryOptions
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <base href="/" />
+    <ResourcePreloader />
+    <link rel="stylesheet" href="@Assets["app.css"]" />
+    <link rel="stylesheet" href="@Assets["DataBridge.styles.css"]" />
+    <ImportMap />
+    <HeadOutlet />
+</head>
+
+<body>
+    <Routes @rendermode="PageRenderMode" CookieHeader="@cookieHeader" AntiforgeryToken="@antiforgeryToken" />
+    <ReconnectModal />
+    <script src="@Assets["_framework/blazor.web.js"]"></script>
+</body>
+
+</html>
+
+@code {
+    [CascadingParameter] private HttpContext HttpContext { get; set; } = null!;
+
+    private string? cookieHeader;
+    private string? antiforgeryToken;
+
+    // Interactive everywhere except pages marked [ExcludeFromInteractiveRouting], such
+    // as sign-in. There's no prerender, so a page only calls the API once.
+    private IComponentRenderMode? PageRenderMode =>
+        HttpContext.AcceptsInteractiveRouting() ? new InteractiveServerRenderMode(prerender: false) : null;
+
+    protected override void OnInitialized()
+    {
+        AntiforgeryTokenSet tokens = Antiforgery.GetAndStoreTokens(HttpContext);
+        antiforgeryToken = tokens.RequestToken;
+        cookieHeader = HttpContext.Request.Headers.Cookie.ToString();
+
+        // A first-time visitor's antiforgery cookie is only in this response so far.
+        if (tokens.CookieToken != null)
+        {
+            string newCookie = $"{AntiforgeryOptions.Value.Cookie.Name}={tokens.CookieToken}";
+            cookieHeader = string.IsNullOrEmpty(cookieHeader) ? newCookie : $"{cookieHeader}; {newCookie}";
+        }
+    }
+}
+

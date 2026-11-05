@@ -1,0 +1,21 @@
+@using System.Security.Claims
+@inject NavigationManager Navigation
+
+@if (User.Identity?.IsAuthenticated == true)
+{
+    <h1>Access denied</h1>
+    <p>Your account doesn't have permission to open this page.</p>
+}
+
+@code {
+    [Parameter, EditorRequired] public ClaimsPrincipal User { get; set; } = null!;
+
+    protected override void OnInitialized()
+    {
+        if (User.Identity?.IsAuthenticated != true)
+        {
+            string returnUrl = "/" + Navigation.ToBaseRelativePath(Navigation.Uri);
+            Navigation.NavigateTo($"login?returnUrl={Uri.EscapeDataString(returnUrl)}", forceLoad: true);
+        }
+    }
+}

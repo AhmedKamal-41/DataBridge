@@ -1,0 +1,255 @@
+@inject DataBridgeApiClient ApiClient
+
+<div class="row-card" data-source-row="@Row.SourceRowNumber">
+    <div class="row-card-title">
+        <span>Source row @Row.SourceRowNumber</span>
+        @if (Row.MatchResult != null)
+        {
+            <span class="badge @(Row.MatchResult == "Conflict" ? "warn" : "")">@Row.MatchResult</span>
+        }
+        @if (Row.Issues.Count > 0)
+        {
+            <span class="badge bad">@Row.Issues.Count issue(s)</span>
+        }
+        @if (Row.ReviewDecision == "Approved")
+        {
+            <span class="badge good">Approved</span>
+        }
+        else if (Row.ReviewDecision == "Rejected")
+        {
+            <span class="badge bad">Rejected</span>
+        }
+        @if (Row.IsCorrected)
+        {
+            <span class="badge">Corrected</span>
+        }
+    </div>
+
+    <div class="table-scroll">
+        <table>
+            <thead>
+                <tr><th>Name</th><th>Company</th><th>Email</th><th>Phone</th><th>Location</th><th>Status</th><th>Notes</th></tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td>@Row.DraftName</td>
+                    <td>@Row.DraftCompany</td>
+                    <td>@Row.DraftEmail</td>
+                    <td>@Row.DraftPhone</td>
+                    <td>@Row.DraftLocation</td>
+                    <td>@Row.DraftStatus</td>
+                    <td>@Row.DraftNotes</td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+
+    @if (Row.Issues.Count > 0)
+    {
+        <h3>Validation issues</h3>
+        <ul class="issues">
+            @foreach (ImportIssueDto issue in Row.Issues)
+            {
+                <li><strong>@issue.FieldName:</strong> @issue.Message</li>
+            }
+        </ul>
+    }
+
+    @if (CanReview && Row.Changes.Count > 0)
+    {
+        <h3>Current and incoming values for customer #@Row.MatchedCustomerId</h3>
+        <table class="changes">
+            <thead>
+                <tr><th>Field</th><th>Current</th><th>Incoming</th></tr>
+            </thead>
+            <tbody>
+                @foreach (FieldChangeDto change in Row.Changes)
+                {
+                    <tr>
+                        <td>@change.FieldName</td>
+                        <td>@change.CurrentValue</td>
+                        <td>@change.IncomingValue</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    }
+
+    @if (Row.DecisionReason != null)
+    {
+        <p><strong>Rejection reason:</strong> @Row.DecisionReason</p>
+    }
+
+    <details>
+        <summary>Original file values</summary>
+        <ul>
+            @for (int i = 0; i < Row.OriginalCells.Count; i++)
+            {
+                string label = i < Headers.Count ? Headers[i] : $"Column {i}";
+                <li>@label: <code>@Row.OriginalCells[i]</code></li>
+            }
+        </ul>
+    </details>
+
+    @if (errorMessage != null)
+    {
+        <div class="notice error" role="alert">@errorMessage</div>
+    }
+
+    @if (CanReview)
+    {
+        <div class="review-actions">
+            @if (isEditing)
+            {
+                <div class="field-grid">
+                    <label class="field">Name <input @bind="correction.DraftName" /></label>
+                    <label class="field">Company <input @bind="correction.DraftCompany" /></label>
+                    <label class="field">Email <input @bind="correction.DraftEmail" /></label>
+                    <label class="field">Phone <input @bind="correction.DraftPhone" /></label>
+                    <label class="field">Location <input @bind="correction.DraftLocation" /></label>
+                    <label class="field">Status <input @bind="correction.DraftStatus" /></label>
+                    <label class="field">Notes <input @bind="correction.DraftNotes" /></label>
+                </div>
+                <div class="actions">
+                    <button type="button" disabled="@ActionsDisabled" @onclick="SaveCorrectionAsync">Save correction</button>
+                    <button type="button" class="secondary" disabled="@isSaving" @onclick="() => isEditing = false">Cancel</button>
+                </div>
+            }
+            else
+            {
+                <div class="actions">
+                    <button type="button" class="secondary" disabled="@isSaving" @onclick="StartEditing">Correct row</button>
+
+                    @if (Row.MatchResult == "New" && Row.ReviewDecision != "Approved")
+                    {
+                        <button type="button" disabled="@ActionsDisabled" @onclick="() => ApproveAsync(false)">Approve insert</button>
+                    }
+
+                    @if (Row.MatchResult == "Conflict" && Row.ReviewDecision != "Approved")
+                    {
+                        <label>
+                            <input type="checkbox" @bind="updateConfirmed" />
+                            Update customer #@Row.MatchedCustomerId with the incoming values
+                        </label>
+                        <button type="button" disabled="@(ActionsDisabled || !updateConfirmed)" @onclick="() => ApproveAsync(true)">Approve update</button>
+                    }
+                </div>
+
+                @if (Row.ReviewDecision != "Rejected")
+                {
+                    <div class="field-row" style="margin: .75rem 0 0">
+                        <label class="field">Rejection reason <input @bind="rejectionReason" @bind:event="oninput" /></label>
+                        <button type="button" class="danger" disabled="@(ActionsDisabled || string.IsNullOrWhiteSpace(rejectionReason))" @onclick="RejectAsync">Reject</button>
+                    </div>
+                }
+            }
+        </div>
+    }
+</div>
+
+@code {
+    [Parameter, EditorRequired] public ImportRowDto Row { get; set; } = null!;
+    [Parameter, EditorRequired] public int BatchId { get; set; }
+    [Parameter, EditorRequired] public List<string> Headers { get; set; } = null!;
+    [Parameter] public bool CanReview { get; set; }
+
+    // Called after this row changes or goes stale. The page reloads every row,
+    // because a change here can affect others, such as a repeated email.
+    [Parameter] public EventCallback<string?> OnChanged { get; set; }
+
+    private CorrectImportRowRequest correction = new CorrectImportRowRequest();
+    private bool isEditing;
+    private bool isSaving;
+    private bool updateConfirmed;
+    private string rejectionReason = string.Empty;
+    private string? errorMessage;
+
+    private bool ActionsDisabled => isSaving;
+
+    private void StartEditing()
+    {
+        errorMessage = null;
+        correction = new CorrectImportRowRequest
+        {
+            DraftName = Row.DraftName,
+            DraftCompany = Row.DraftCompany,
+            DraftEmail = Row.DraftEmail,
+            DraftPhone = Row.DraftPhone,
+            DraftLocation = Row.DraftLocation,
+            DraftStatus = Row.DraftStatus,
+            DraftNotes = Row.DraftNotes
+        };
+        isEditing = true;
+    }
+
+    private async Task SaveCorrectionAsync()
+    {
+        await RunAsync(
+            () => ApiClient.CorrectRowAsync(BatchId, Row.Id, correction),
+            $"Source row {Row.SourceRowNumber} was corrected and validated again.");
+    }
+
+    private async Task ApproveAsync(bool isUpdate)
+    {
+        var request = new SaveRowDecisionRequest
+        {
+            Decision = "Approved",
+            ConfirmUpdate = isUpdate,
+
+            // The version this card is showing, not a fresh one: the service
+            // refuses it if the customer has changed since this preview loaded.
+            CustomerVersion = isUpdate ? Row.MatchedCustomerVersion : null
+        };
+
+        await RunAsync(
+            () => ApiClient.SaveDecisionAsync(BatchId, Row.Id, request),
+            $"Source row {Row.SourceRowNumber} was approved.");
+    }
+
+    private async Task RejectAsync()
+    {
+        var request = new SaveRowDecisionRequest
+        {
+            Decision = "Rejected",
+            Reason = rejectionReason
+        };
+
+        await RunAsync(
+            () => ApiClient.SaveDecisionAsync(BatchId, Row.Id, request),
+            $"Source row {Row.SourceRowNumber} was rejected.");
+    }
+
+    private async Task RunAsync(Func<Task<ImportRowDto>> sendRequest, string successMessage)
+    {
+        isSaving = true;
+        errorMessage = null;
+
+        try
+        {
+            await sendRequest();
+
+            isEditing = false;
+            updateConfirmed = false;
+            rejectionReason = string.Empty;
+
+            await OnChanged.InvokeAsync(successMessage);
+        }
+        catch (ApiException exception) when (exception.StatusCode == StatusCodes.Status409Conflict)
+        {
+            // The values on screen are out of date, so the reviewer must look at
+            // the new ones and confirm again.
+            updateConfirmed = false;
+            errorMessage = $"{exception.Message} The preview below now shows the current values.";
+
+            await OnChanged.InvokeAsync(null);
+        }
+        catch (ApiException exception)
+        {
+            errorMessage = exception.Message;
+        }
+        finally
+        {
+            isSaving = false;
+        }
+    }
+}

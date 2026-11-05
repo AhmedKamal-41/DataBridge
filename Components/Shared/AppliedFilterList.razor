@@ -1,0 +1,23 @@
+<div class="applied-filters" data-testid="applied-filters">
+    <span class="muted">Applied filters:</span>
+    @if (Filters.Location != null)
+    {
+        <span class="badge">Location: @Filters.Location</span>
+    }
+    @if (Filters.Status != null)
+    {
+        <span class="badge">Status: @Filters.Status</span>
+    }
+    @if (Filters.Company != null)
+    {
+        <span class="badge">Company: @Filters.Company</span>
+    }
+    @if (Filters.Name != null)
+    {
+        <span class="badge">Name: @Filters.Name</span>
+    }
+</div>
+
+@code {
+    [Parameter, EditorRequired] public CustomerSearchFilters Filters { get; set; } = null!;
+}
