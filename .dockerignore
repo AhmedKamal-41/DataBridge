@@ -1,0 +1,23 @@
+# Local secrets and chat exports must never reach an image.
+secrets/
+.env
+.env.*
+chat*.txt
+DataBridge_chat*.txt
+
+# Not needed to build the app.
+.git/
+.gitignore
+.vs/
+.vscode/
+.config/
+bin/
+obj/
+checks/
+scripts/
+compose*.yaml
+Dockerfile
+.dockerignore
+README.md
+DataBridge.http
+customers-sample.*

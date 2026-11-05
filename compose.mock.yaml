@@ -1,0 +1,20 @@
+# Adds a fake OpenAI server for checks/run_ai_eval.sh mock. Never used for normal running.
+services:
+  openai-mock:
+    image: python:3.13-slim
+    command: ["python", "-u", "/checks/openai_mock.py"]
+    environment:
+      MOCK_SABOTAGE: ${MOCK_SABOTAGE:-}
+    volumes:
+      - ./checks:/checks:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('127.0.0.1', 8080), 2)"]
+      interval: 2s
+      retries: 15
+
+  app:
+    environment:
+      OpenAI__BaseUrl: http://openai-mock:8080/v1/
+    depends_on:
+      openai-mock:
+        condition: service_healthy

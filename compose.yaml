@@ -1,0 +1,89 @@
+# DataBridge with its own SQL Server and its own database volume. The volumes belong to
+# this Compose project, so the databridge-sql dev container and its volume aren't touched.
+# Run scripts/setup-secrets.sh once before the first "docker compose up". See README.md.
+name: databridge
+
+x-app: &app
+  build: .
+  image: databridge-app:local
+  environment: &app-environment
+    ASPNETCORE_ENVIRONMENT: Production
+    Api__BaseUrl: http://localhost:8080
+    DataProtection__KeysPath: /keys
+    Secrets__Directory: /run/secrets/app
+    Seed__Enabled: "true"
+    OpenAI__Model: ${OPENAI_MODEL:-gpt-6-astra}
+  secrets:
+    - sql_sa_password
+
+services:
+  sqlserver:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_MEMORY_LIMIT_MB: "2048"
+    command:
+      - bash
+      - -c
+      - export MSSQL_SA_PASSWORD="$$(cat /run/secrets/sql_sa_password)"; exec /opt/mssql/bin/sqlservr
+    secrets:
+      - sql_sa_password
+    volumes:
+      - sql-data:/var/opt/mssql
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - /opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P "$$(cat /run/secrets/sql_sa_password)" -b -Q "SELECT 1"
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 15s
+    restart: unless-stopped
+
+  # Applies the EF Core migrations once SQL Server is ready, then exits.
+  migrate:
+    <<: *app
+    command:
+      - bash
+      - -c
+      - export ConnectionStrings__DataBridge="Server=sqlserver,1433;Database=DataBridge;User Id=sa;Password=$$(cat /run/secrets/sql_sa_password);TrustServerCertificate=True"; exec dotnet DataBridge.dll --apply-migrations
+    depends_on:
+      sqlserver:
+        condition: service_healthy
+    restart: "no"
+
+  app:
+    <<: *app
+    command:
+      - bash
+      - -c
+      - export ConnectionStrings__DataBridge="Server=sqlserver,1433;Database=DataBridge;User Id=sa;Password=$$(cat /run/secrets/sql_sa_password);TrustServerCertificate=True"; exec dotnet DataBridge.dll
+    ports:
+      - 127.0.0.1:${DATABRIDGE_PORT:-8088}:8080
+    volumes:
+      - data-protection-keys:/keys
+      - ${DATABRIDGE_SECRETS_DIR:-./secrets}/app:/run/secrets/app:ro
+    depends_on:
+      sqlserver:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        - CMD
+        - bash
+        - -c
+        - exec 3<>/dev/tcp/127.0.0.1/8080 && printf 'GET /api/health HTTP/1.0\r\n\r\n' >&3 && grep -q '200 OK' <&3
+      interval: 5s
+      timeout: 5s
+      retries: 24
+      start_period: 5s
+    restart: on-failure
+
+volumes:
+  sql-data:
+  data-protection-keys:
+
+secrets:
+  sql_sa_password:
+    file: ${DATABRIDGE_SECRETS_DIR:-./secrets}/sql_sa_password
