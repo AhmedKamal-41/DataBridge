@@ -162,11 +162,12 @@ def newer_mapping():
     status, _ = client.put(f"/api/imports/{batch_id}/mapping", MAP3)
     assert status == 200, status
     # Holding Customers keeps the validation job from saving until the new mapping is in.
-    holder = threading.Thread(target=lambda: sql("BEGIN TRAN; SELECT TOP 0 Id FROM Customers WITH (TABLOCKX,HOLDLOCK); WAITFOR DELAY '00:00:12'; COMMIT"))
+    holder = threading.Thread(target=lambda: sql("BEGIN TRAN; SELECT TOP 0 Id FROM Customers WITH (TABLOCKX,HOLDLOCK); WAITFOR DELAY '00:00:25'; COMMIT"))
     holder.start()
     time.sleep(1)
     status, _ = client.post(f"/api/imports/{batch_id}/validate")
     assert status == 202, status
+    # Well inside the hold above, so the job can't finish and collide with the mapping on a slow machine.
     deadline = time.monotonic() + 10
     while client.batch(batch_id)["job"]["stage"] == "Queued" and time.monotonic() < deadline:
         time.sleep(0.2)
