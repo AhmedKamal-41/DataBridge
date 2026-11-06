@@ -34,21 +34,20 @@ public class AiUsageCap : IAiUsageCap
             return true;
         }
 
-        if (await _db.AiUsageDays.AnyAsync(usage => usage.Day == today))
-        {
-            return false;
-        }
-
+        // Either today's row doesn't exist yet, or today is at the cap. Create the row if it's
+        // missing, then try again. The UPDATE alone decides, because the row can appear at any
+        // moment, and its existing doesn't mean that the cap has been reached.
         try
         {
-            await _db.Database.ExecuteSqlInterpolatedAsync($"INSERT INTO AiUsageDays (Day, Calls) VALUES ({today}, 1)");
-            return true;
+            await _db.Database.ExecuteSqlInterpolatedAsync(
+                $"IF NOT EXISTS (SELECT 1 FROM AiUsageDays WHERE Day = {today}) INSERT INTO AiUsageDays (Day, Calls) VALUES ({today}, 0)");
         }
         catch (SqlException exception) when (exception.Number is 2601 or 2627)
         {
-            // Another request created today's row first, so count this call on that row.
-            return await TryAddToTodayAsync(today);
+            // Another request created today's row first, which is all this needed.
         }
+
+        return await TryAddToTodayAsync(today);
     }
 
     // One UPDATE statement, so two requests can't both take the last call.

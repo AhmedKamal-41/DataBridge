@@ -10,6 +10,7 @@ from support import compose, new_guest, signed_in_admin, sql, sql_value, wait_un
 CAP = 12
 GUESTS = 4
 PER_GUEST = 5
+ROUNDS = 15
 QUESTION = {"question": "Show me active customers in Queens"}
 
 
@@ -31,36 +32,39 @@ def provider_calls():
 def run():
     restart_app(CAP)
     try:
-        sql("DELETE FROM AiUsageDays")
         guests = [new_guest() for _ in range(GUESTS)]
         admin = signed_in_admin()
-        calls_before = provider_calls()
 
-        replies = []
-        lock = threading.Lock()
-        barrier = threading.Barrier(GUESTS * PER_GUEST)
+        # Each round starts with no row for today, as the first calls of a day do.
+        for _ in range(ROUNDS):
+            sql("DELETE FROM AiUsageDays; UPDATE GuestWorkspaces SET AiSearches = 0")
+            calls_before = provider_calls()
 
-        def search(guest):
-            barrier.wait()
-            reply = guest.post("/api/customers/search/ai", QUESTION)
-            with lock:
-                replies.append(reply)
+            replies = []
+            lock = threading.Lock()
+            barrier = threading.Barrier(GUESTS * PER_GUEST)
 
-        threads = [threading.Thread(target=search, args=(guest,)) for guest in guests for _ in range(PER_GUEST)]
-        for thread in threads:
-            thread.start()
-        for thread in threads:
-            thread.join()
+            def search(guest):
+                barrier.wait()
+                reply = guest.post("/api/customers/search/ai", QUESTION)
+                with lock:
+                    replies.append(reply)
 
-        statuses = sorted(reply[0] for reply in replies)
-        assert statuses == [200] * CAP + [429] * (GUESTS * PER_GUEST - CAP), statuses
-        limited = [reply[1]["detail"] for reply in replies if reply[0] == 429]
-        assert all("shared limit" in detail for detail in limited), limited
-        made = provider_calls() - calls_before
-        assert made == CAP, f"the provider received {made} calls"
-        assert int(sql_value("SELECT Calls FROM AiUsageDays")) == CAP
-        print(f"PASS {GUESTS * PER_GUEST} concurrent requests from {GUESTS} guest workspaces: exactly {CAP} reached the provider, "
-              f"{GUESTS * PER_GUEST - CAP} returned 429")
+            threads = [threading.Thread(target=search, args=(guest,)) for guest in guests for _ in range(PER_GUEST)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+
+            statuses = sorted(reply[0] for reply in replies)
+            assert statuses == [200] * CAP + [429] * (GUESTS * PER_GUEST - CAP), statuses
+            limited = [reply[1]["detail"] for reply in replies if reply[0] == 429]
+            assert all("shared limit" in detail for detail in limited), limited
+            made = provider_calls() - calls_before
+            assert made == CAP, f"the provider received {made} calls"
+            assert int(sql_value("SELECT Calls FROM AiUsageDays")) == CAP
+        print(f"PASS {ROUNDS} rounds of {GUESTS * PER_GUEST} concurrent requests from {GUESTS} guest workspaces: exactly {CAP} reached "
+              f"the provider each time, and {GUESTS * PER_GUEST - CAP} returned 429")
 
         # A request refused by the shared cap doesn't use a guest's own search.
         used = int(sql_value("SELECT SUM(AiSearches) FROM GuestWorkspaces WHERE AiSearches > 0"))
