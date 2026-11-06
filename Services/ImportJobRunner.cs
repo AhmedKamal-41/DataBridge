@@ -37,6 +37,16 @@ public class ImportJobRunner
         OnAttemptsExceeded = AttemptsExceededAction.Fail)]
     public async Task RunAsync(int batchId, PerformContext context, CancellationToken cancellationToken)
     {
+        Guid? workspaceId = await _db.ImportBatches.IgnoreQueryFilters()
+            .Where(batch => batch.Id == batchId)
+            .Select(batch => (Guid?)batch.WorkspaceId)
+            .SingleOrDefaultAsync(cancellationToken);
+        if (workspaceId == null)
+        {
+            return;
+        }
+
+        _db.WorkspaceId = workspaceId.Value;
         await using SqlConnection lockConnection = await TryLockBatchAsync(batchId);
 
         if (lockConnection.State != System.Data.ConnectionState.Open)

@@ -144,7 +144,7 @@ public class DataBridgeApiClient
     {
         if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized)
         {
-            return "Your session has ended. Sign in again.";
+            return "Your session has ended. Return to the DataBridge home page to start again.";
         }
 
         if (response.StatusCode == System.Net.HttpStatusCode.Forbidden)

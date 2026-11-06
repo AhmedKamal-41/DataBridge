@@ -1,11 +1,11 @@
 @page "/imports/{BatchId:int}"
-@attribute [Authorize(Roles = AppRoles.AdminOrReviewer)]
+@attribute [Authorize(Roles = AppRoles.ImportReviewers)]
 @inject DataBridgeApiClient ApiClient
 @implements IDisposable
 
 <PageTitle>Import @BatchId</PageTitle>
 
-<p><a href="imports">&larr; All imports</a></p>
+<p class="breadcrumb"><a href="imports">&larr; All imports</a></p>
 
 @if (isNotFound)
 {
@@ -25,11 +25,16 @@ else if (batch == null)
 }
 else
 {
-    <h1>@batch.FileName</h1>
-    <p>
-        <span class="badge @(IsImportFailed ? "bad" : "")" data-testid="batch-status">@(IsImportFailed ? "Failed" : batch.Status)</span>
-        <span class="muted">@batch.RowCount row(s)</span>
-    </p>
+    <section class="page-heading batch-heading">
+        <div><p class="eyebrow">Import #@BatchId</p><h1>@batch.FileName</h1><p>@batch.RowCount row(s)</p></div>
+        <span class="badge @(IsImportFailed ? "bad" : IsCommitted ? "good" : "")" data-testid="batch-status">@(IsImportFailed ? "Failed" : batch.Status)</span>
+    </section>
+    <ol class="import-steps" aria-label="Import stages">
+        <li class="@(CurrentStep == 1 ? "current" : "")" aria-current="@(CurrentStep == 1 ? "step" : null)"><span>1</span> Upload</li>
+        <li class="@(CurrentStep == 2 ? "current" : "")" aria-current="@(CurrentStep == 2 ? "step" : null)"><span>2</span> Map</li>
+        <li class="@(CurrentStep == 3 ? "current" : "")" aria-current="@(CurrentStep == 3 ? "step" : null)"><span>3</span> Review</li>
+        <li class="@(CurrentStep == 4 ? "current" : "")" aria-current="@(CurrentStep == 4 ? "step" : null)"><span>4</span> Commit</li>
+    </ol>
 
     @if (batch.Job.IsActive || batch.Job.Stage == "Failed")
     {
@@ -87,10 +92,11 @@ else
     }
     else if (batch.Status != "Pending")
     {
-        @if (isAdmin)
+        @if (canManage)
         {
         <section class="panel">
             <h2>Map columns</h2>
+            <p class="muted mapping-hint">Match the file headers to customer fields, then save your choices.</p>
             <div class="field-grid">
                 @foreach (MappingField field in mappingFields)
                 {
@@ -116,7 +122,7 @@ else
             <h2>Validation</h2>
             @if (batch.Mapping == null)
             {
-                <p class="muted">An Admin needs to map the columns before this batch can be validated.</p>
+                <p class="muted">@(canManage ? "Save the column mapping before validating this batch." : "An Admin needs to map the columns before this batch can be validated.")</p>
             }
             <button type="button" class="secondary" disabled="@(isBusy || batch.Mapping == null || batch.Job.IsActive)" @onclick="ValidateAsync">
                 @(batch.Status == "ReadyForReview" ? "Validate again" : "Validate batch")
@@ -169,7 +175,7 @@ else
         <section class="panel">
             <h2>Commit</h2>
             <p class="muted">Every row needs a decision. Committing saves the approved rows to Customers.</p>
-            @if (isAdmin)
+            @if (canManage)
             {
                 <button type="button" disabled="@isBusy" @onclick="CommitAsync">Commit batch</button>
             }
@@ -240,7 +246,7 @@ else
     private List<MappingField> mappingFields = new List<MappingField>();
     private int rowsPage = 1;
     private int auditPage = 1;
-    private bool isAdmin;
+    private bool canManage;
     private bool isBusy;
     private bool isNotFound;
     private string? batchError;
@@ -253,6 +259,7 @@ else
     private readonly CancellationTokenSource pageClosed = new CancellationTokenSource();
 
     private bool IsCommitted => batch?.CommitSummary != null;
+    private int CurrentStep => IsCommitted ? 4 : batch?.Status == "Pending" ? 1 : batch?.Mapping == null ? 2 : 3;
 
     // A batch stays Pending when its file can't be read, which would look as if it
     // were still running.
@@ -261,7 +268,7 @@ else
     protected override async Task OnParametersSetAsync()
     {
         AuthenticationState state = await AuthenticationState;
-        isAdmin = state.User.IsInRole(AppRoles.Admin);
+        canManage = state.User.IsInRole(AppRoles.Admin) || state.User.IsInRole(AppRoles.Guest);
 
         await LoadPageAsync();
     }
@@ -368,9 +375,18 @@ else
 
         foreach (MappingField field in fields)
         {
-            if (loadedBatch.Mapping != null && loadedBatch.Mapping.TryGetValue(field.Name, out int column))
+            if (loadedBatch.Mapping == null)
             {
-                field.Column = column;
+                int suggestedColumn = loadedBatch.Headers.FindIndex(header =>
+                    string.Equals(header.Trim(), field.Name, StringComparison.OrdinalIgnoreCase));
+                if (suggestedColumn >= 0)
+                {
+                    field.Column = suggestedColumn;
+                }
+            }
+            else if (loadedBatch.Mapping.TryGetValue(field.Name, out int savedColumn))
+            {
+                field.Column = savedColumn;
             }
         }
 

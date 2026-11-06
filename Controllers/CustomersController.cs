@@ -14,11 +14,14 @@ public class CustomersController : ControllerBase
 {
     private readonly ICustomerService _customerService;
     private readonly ICustomerAiSearchService _aiSearchService;
+    private readonly GuestWorkspaceService _guestWorkspaces;
 
-    public CustomersController(ICustomerService customerService, ICustomerAiSearchService aiSearchService)
+    public CustomersController(ICustomerService customerService, ICustomerAiSearchService aiSearchService,
+        GuestWorkspaceService guestWorkspaces)
     {
         _customerService = customerService;
         _aiSearchService = aiSearchService;
+        _guestWorkspaces = guestWorkspaces;
     }
 
     // GET /api/customers?page=1&pageSize=25&location=Queens&status=Active
@@ -37,6 +40,12 @@ public class CustomersController : ControllerBase
     [HttpPost("search/ai")]
     public async Task<IActionResult> SearchWithAi(CustomerAiSearchRequest request)
     {
+        if (User.IsInRole(AppRoles.Guest) && !await _guestWorkspaces.ReserveAiSearchAsync())
+        {
+            return Problem(detail: "This guest workspace has used its AI searches. You can still use the location and status filters.",
+                statusCode: StatusCodes.Status429TooManyRequests);
+        }
+
         try
         {
             return Ok(await _aiSearchService.SearchAsync(request.Question!));

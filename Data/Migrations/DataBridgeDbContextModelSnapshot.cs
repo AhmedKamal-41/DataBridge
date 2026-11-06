@@ -72,12 +72,49 @@ namespace DataBridge.Data.Migrations
                         .HasMaxLength(20)
                         .HasColumnType("nvarchar(20)");
 
+                    b.Property<Guid>("WorkspaceId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasDefaultValue(new Guid("00000000-0000-0000-0000-000000000000"));
+
                     b.HasKey("Id");
 
-                    b.HasIndex("NormalizedEmail")
+                    b.HasIndex("WorkspaceId", "NormalizedEmail")
                         .IsUnique();
 
                     b.ToTable("Customers", (string)null);
+                });
+
+            modelBuilder.Entity("DataBridge.Models.GuestWorkspace", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<int>("AiSearches")
+                        .HasColumnType("int");
+
+                    b.Property<int>("Imports")
+                        .HasColumnType("int");
+
+                    b.Property<DateTime?>("SessionExpiresAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<DateTime>("TokenExpiresAtUtc")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("TokenHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .IsUnicode(false)
+                        .HasColumnType("varchar(64)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TokenHash")
+                        .IsUnique();
+
+                    b.ToTable("GuestWorkspaces");
                 });
 
             modelBuilder.Entity("DataBridge.Models.ImportAuditEntry", b =>
@@ -173,7 +210,14 @@ namespace DataBridge.Data.Migrations
                     b.Property<DateTime>("UploadedAtUtc")
                         .HasColumnType("datetime2");
 
+                    b.Property<Guid>("WorkspaceId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasDefaultValue(new Guid("00000000-0000-0000-0000-000000000000"));
+
                     b.HasKey("Id");
+
+                    b.HasIndex("WorkspaceId", "Id");
 
                     b.ToTable("ImportBatches", (string)null);
                 });
@@ -539,7 +583,7 @@ namespace DataBridge.Data.Migrations
                         .HasForeignKey("CustomerId")
                         .OnDelete(DeleteBehavior.Restrict);
 
-                    b.HasOne("DataBridge.Models.ImportBatch", null)
+                    b.HasOne("DataBridge.Models.ImportBatch", "Batch")
                         .WithMany()
                         .HasForeignKey("ImportBatchId")
                         .OnDelete(DeleteBehavior.Restrict);
@@ -548,24 +592,30 @@ namespace DataBridge.Data.Migrations
                         .WithMany()
                         .HasForeignKey("ImportRowId")
                         .OnDelete(DeleteBehavior.Restrict);
+
+                    b.Navigation("Batch");
                 });
 
             modelBuilder.Entity("DataBridge.Models.ImportBatchFile", b =>
                 {
-                    b.HasOne("DataBridge.Models.ImportBatch", null)
+                    b.HasOne("DataBridge.Models.ImportBatch", "Batch")
                         .WithOne("File")
                         .HasForeignKey("DataBridge.Models.ImportBatchFile", "ImportBatchId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
+
+                    b.Navigation("Batch");
                 });
 
             modelBuilder.Entity("DataBridge.Models.ImportBatchJob", b =>
                 {
-                    b.HasOne("DataBridge.Models.ImportBatch", null)
+                    b.HasOne("DataBridge.Models.ImportBatch", "Batch")
                         .WithOne("Job")
                         .HasForeignKey("DataBridge.Models.ImportBatchJob", "ImportBatchId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
+
+                    b.Navigation("Batch");
                 });
 
             modelBuilder.Entity("DataBridge.Models.ImportIssue", b =>

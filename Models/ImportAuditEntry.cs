@@ -12,6 +12,7 @@ public class ImportAuditEntry
     public string? Details { get; set; }
 
     public int? ImportBatchId { get; set; }
+    public ImportBatch? Batch { get; set; }
     public int? ImportRowId { get; set; }
     public int? CustomerId { get; set; }
 }

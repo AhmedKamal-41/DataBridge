@@ -56,10 +56,12 @@ public class ImportService : IImportService, IImportJobWork
                 $"The filename can have at most {MaxFileNameLength} characters.");
         }
 
-        if (fileStream.Length > _maxUploadBytes)
+        bool isGuest = _db.WorkspaceId != Guid.Empty;
+        long uploadLimit = isGuest ? Math.Min(_maxUploadBytes, GuestWorkspace.MaxFileBytes) : _maxUploadBytes;
+        if (fileStream.Length > uploadLimit)
         {
             throw new ImportException(ImportErrorType.TooLarge,
-                $"The file is {fileStream.Length} bytes, but the limit is {_maxUploadBytes} bytes.");
+                $"The file is {fileStream.Length} bytes, but the limit is {uploadLimit} bytes.");
         }
 
         using var fileCopy = new MemoryStream();
@@ -69,6 +71,7 @@ public class ImportService : IImportService, IImportJobWork
 
         var batch = new ImportBatch
         {
+            WorkspaceId = _db.WorkspaceId,
             FileName = fileName,
             OriginalHeadersJson = "[]",
             Status = ImportBatchStatus.Pending,
@@ -82,10 +85,26 @@ public class ImportService : IImportService, IImportJobWork
             }
         };
 
-        // One SaveChangesAsync runs in one transaction, so the file, batch and job
-        // are all safe in SQL Server before anything is queued.
+        await using var guestTransaction = isGuest ? await _db.Database.BeginTransactionAsync() : null;
+        if (guestTransaction != null)
+        {
+            int reserved = await _db.GuestWorkspaces.Where(workspace => workspace.Id == _db.WorkspaceId &&
+                    workspace.SessionExpiresAtUtc > now && workspace.Imports < GuestWorkspace.MaxImports)
+                .ExecuteUpdateAsync(update => update.SetProperty(workspace => workspace.Imports, workspace => workspace.Imports + 1));
+            if (reserved == 0)
+            {
+                throw new ImportException(ImportErrorType.Locked,
+                    $"This guest workspace has ended or used its {GuestWorkspace.MaxImports} imports.");
+            }
+        }
+
+        // Save the file, batch and job before queueing. Guests reserve quota in the same transaction.
         _db.ImportBatches.Add(batch);
         await _db.SaveChangesAsync();
+        if (guestTransaction != null)
+        {
+            await guestTransaction.CommitAsync();
+        }
 
         await _jobQueue.EnqueueAsync(batch.Id);
 
@@ -397,14 +416,17 @@ public class ImportService : IImportService, IImportJobWork
 
         using var fileStream = new MemoryStream(file.Content);
 
+        bool isGuest = _db.WorkspaceId != Guid.Empty;
+        int maxRows = isGuest ? GuestWorkspace.MaxRowsPerImport : int.MaxValue;
         ParsedImportFile parsedFile;
         if (Path.GetExtension(storedBatch.FileName).Equals(".xlsx", StringComparison.OrdinalIgnoreCase))
         {
-            parsedFile = ReadXlsx(storedBatch.FileName, fileStream);
+            long maxUnpackedBytes = isGuest ? GuestWorkspace.MaxExpandedWorkbookBytes : MaxUnpackedWorkbookBytes;
+            parsedFile = ReadXlsx(storedBatch.FileName, fileStream, maxRows, maxUnpackedBytes);
         }
         else
         {
-            parsedFile = await ReadCsvAsync(fileStream);
+            parsedFile = await ReadCsvAsync(fileStream, maxRows);
         }
 
         string headersJson = JsonSerializer.Serialize(parsedFile.Headers);
@@ -682,6 +704,7 @@ public class ImportService : IImportService, IImportJobWork
                 {
                     var customer = new Customer
                     {
+                        WorkspaceId = batch.WorkspaceId,
                         Name = row.DraftName!,
                         Company = row.DraftCompany,
                         Email = row.DraftEmail!,
@@ -783,7 +806,7 @@ public class ImportService : IImportService, IImportJobWork
                     Id = entry.Id,
                     Action = entry.Action,
                     Actor = entry.Actor,
-                    ActorName = actorNames.GetValueOrDefault(entry.Actor),
+                    ActorName = GuestWorkspaceService.IsGuestActor(entry.Actor) ? "Guest" : actorNames.GetValueOrDefault(entry.Actor),
                     TimestampUtc = DateTime.SpecifyKind(entry.TimestampUtc, DateTimeKind.Utc),
                     ImportRowId = entry.ImportRowId,
                     CustomerId = entry.CustomerId,
@@ -1284,7 +1307,7 @@ public class ImportService : IImportService, IImportJobWork
         return email.Trim().ToLowerInvariant();
     }
 
-    private static async Task<ParsedImportFile> ReadCsvAsync(Stream fileStream)
+    private static async Task<ParsedImportFile> ReadCsvAsync(Stream fileStream, int maxRows)
     {
         var options = new CsvReaderOptions
         {
@@ -1330,6 +1353,7 @@ public class ImportService : IImportService, IImportJobWork
                 }
                 else
                 {
+                    CheckRowLimit(rows.Count, maxRows);
                     // The line in the file, so that a reviewer can find the row
                     // there. Blank lines and multi-line cells keep this accurate.
                     rows.Add(CreateStagedRow((int)reader.LineNumber, cells));
@@ -1344,14 +1368,14 @@ public class ImportService : IImportService, IImportJobWork
         return CreateParsedFile(headers, rows);
     }
 
-    private static ParsedImportFile ReadXlsx(string fileName, Stream fileStream)
+    private static ParsedImportFile ReadXlsx(string fileName, Stream fileStream, int maxRows, long maxUnpackedBytes)
     {
         List<string>? headers = null;
         var rows = new List<ImportRow>();
 
         try
         {
-            CheckUnpackedWorkbookSize(fileStream);
+            CheckUnpackedWorkbookSize(fileStream, maxUnpackedBytes);
 
             using var workbook = new XLWorkbook(fileStream);
             IXLWorksheet worksheet = workbook.Worksheet(1);
@@ -1382,6 +1406,7 @@ public class ImportService : IImportService, IImportJobWork
 
                     if (!cells.All(string.IsNullOrWhiteSpace))
                     {
+                        CheckRowLimit(rows.Count, maxRows);
                         rows.Add(CreateStagedRow(row.RowNumber(), cells));
                     }
                 }
@@ -1398,7 +1423,15 @@ public class ImportService : IImportService, IImportJobWork
         return CreateParsedFile(headers, rows);
     }
 
-    private static void CheckUnpackedWorkbookSize(Stream fileStream)
+    private static void CheckRowLimit(int rowCount, int maxRows)
+    {
+        if (rowCount >= maxRows)
+        {
+            throw new ImportException(ImportErrorType.TooLarge, $"Guest imports can contain up to {maxRows} data rows.");
+        }
+    }
+
+    private static void CheckUnpackedWorkbookSize(Stream fileStream, long maxUnpackedBytes)
     {
         long unpackedBytes = 0;
 
@@ -1412,10 +1445,10 @@ public class ImportService : IImportService, IImportJobWork
 
         fileStream.Position = 0;
 
-        if (unpackedBytes > MaxUnpackedWorkbookBytes)
+        if (unpackedBytes > maxUnpackedBytes)
         {
             throw new ImportException(ImportErrorType.TooLarge,
-                $"The workbook unpacks to {unpackedBytes} bytes, but the limit is {MaxUnpackedWorkbookBytes} bytes.");
+                $"The workbook unpacks to {unpackedBytes} bytes, but the limit is {maxUnpackedBytes} bytes.");
         }
     }
 

@@ -1,10 +1,13 @@
 @page "/login"
+@layout PublicLayout
 @attribute [ExcludeFromInteractiveRouting]
 
 <PageTitle>Sign in</PageTitle>
 
 <section class="panel sign-in">
+    <p class="eyebrow">Member workspace</p>
     <h1>Sign in</h1>
+    <p class="muted">Use your DataBridge account to open your team’s workspace.</p>
 
     @if (Error == "locked")
     {
@@ -23,6 +26,7 @@
         <label class="field">Password <input type="password" name="password" autocomplete="current-password" required /></label>
         <button type="submit">Sign in</button>
     </form>
+    <p class="login-guest-link"><a href="/#try">Try the guest workspace</a></p>
 </section>
 
 @code {

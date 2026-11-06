@@ -1,5 +1,6 @@
 #blazor-error-ui {
     color-scheme: light only;
+    color: #142b27;
     background: lightyellow;
     bottom: 0;
     box-shadow: 0 -1px 2px rgba(0, 0, 0, 0.2);
@@ -11,6 +12,10 @@
     width: 100%;
     z-index: 1000;
 }
+
+    #blazor-error-ui a {
+        color: #104a3c;
+    }
 
     #blazor-error-ui .dismiss {
         cursor: pointer;

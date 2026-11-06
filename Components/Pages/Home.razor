@@ -1,7 +1,75 @@
-﻿@page "/"
+@page "/"
+@layout PublicLayout
+@attribute [ExcludeFromInteractiveRouting]
 
-<PageTitle>Home</PageTitle>
+<PageTitle>DataBridge | Customer data imports</PageTitle>
+<HeadContent>
+    <meta name="description" content="Stage, validate, and review customer spreadsheet imports in one workspace. Try DataBridge with sample data in a private guest workspace." />
+</HeadContent>
 
-<h1>Hello, world!</h1>
+<section class="public-container landing-hero" id="try">
+    <div class="hero-copy">
+        <p class="eyebrow"><span class="signal-dot"></span> Customer data operations</p>
+        <h1>Review your<br /><span>customer imports.</span></h1>
+        <p class="hero-description">Turn CSV and Excel files into customer records you can trust. Catch duplicates, review changes, and decide exactly what gets saved.</p>
+        <AuthorizeView>
+            <Authorized>
+                <div class="hero-actions"><a class="button-link" href="/workspace">Open workspace <span aria-hidden="true">→</span></a></div>
+            </Authorized>
+            <NotAuthorized>
+                <div class="hero-actions">
+                    <form method="post" action="/account/guest" data-enhance="false" data-guest-entry>
+                        <AntiforgeryToken />
+                        <input type="hidden" name="token" />
+                        <button type="submit">Try as guest <span aria-hidden="true">→</span></button>
+                    </form>
+                    <a class="button-link secondary" href="/login">Member sign-in</a>
+                </div>
+                <p class="guest-note">No account needed. A private @(GuestWorkspace.SessionMinutes)-minute workspace with sample data.</p>
+                <p class="guest-entry-error" data-guest-error role="alert" hidden="@(GuestError == null)">Your entry token expired. Select Try as guest to start again.</p>
+            </NotAuthorized>
+        </AuthorizeView>
+    </div>
 
-Welcome to your new app.
+    <div class="hero-preview" aria-label="Example of the import review screen">
+        <div class="preview-window">
+            <div class="preview-topline">
+                <span class="preview-dots" aria-hidden="true"><i></i><i></i><i></i></span>
+                <span>WORKFLOW PREVIEW</span>
+                <span class="preview-live"><span class="signal-dot"></span> Sample</span>
+            </div>
+            <div class="preview-body">
+                <div class="preview-heading">
+                    <div><p>IMPORT REVIEW</p><strong>customers-q4.csv</strong></div>
+                    <span class="preview-pill">Ready for review</span>
+                </div>
+                <div class="preview-steps" aria-label="Import stages">
+                    <span>1 · Upload</span><span>2 · Map</span><span class="current">3 · Review</span><span>4 · Commit</span>
+                </div>
+                <div class="preview-table">
+                    <div class="preview-table-label"><span>Customer</span><span>Result</span></div>
+                    <div><span><i class="preview-avatar mint" aria-hidden="true">AP</i>Avery Patel</span><span class="preview-result">Conflict</span></div>
+                    <div><span><i class="preview-avatar yellow" aria-hidden="true">CM</i>Casey Morgan</span><span class="preview-result good">New row</span></div>
+                    <div><span><i class="preview-avatar violet" aria-hidden="true">ML</i>Morgan Lee</span><span class="preview-result neutral">Duplicate</span></div>
+                </div>
+                <div class="preview-foot">Review every change before it reaches your customer list.</div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section class="workflow-section" id="workflow">
+    <div class="public-container">
+        <p class="eyebrow">From spreadsheet to record</p>
+        <h2>One place to review every import.</h2>
+        <div class="workflow-grid">
+            <article><span>01</span><h3>Stage your file</h3><p>Upload CSV or Excel and map spreadsheet headers to the fields you use.</p></article>
+            <article><span>02</span><h3>Review the changes</h3><p>See validation issues, duplicate records, and conflicts side by side.</p></article>
+            <article><span>03</span><h3>Commit approved rows</h3><p>Save reviewed changes together, then check the customer directory and audit trail.</p></article>
+        </div>
+    </div>
+</section>
+
+@code {
+    [SupplyParameterFromQuery(Name = "guest")] public string? GuestError { get; set; }
+}

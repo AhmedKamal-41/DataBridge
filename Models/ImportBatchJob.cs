@@ -6,6 +6,7 @@ namespace DataBridge.Models;
 public class ImportBatchJob
 {
     public int ImportBatchId { get; set; }
+    public ImportBatch Batch { get; set; } = null!;
 
     public ImportJobKind Kind { get; set; }
     public ImportJobStage Stage { get; set; }

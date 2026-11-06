@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" role="img" aria-label="DataBridge logo">
+  <rect width="120" height="120" rx="34" fill="#17624f"/>
+  <g transform="translate(24 24) scale(3)" fill="none" stroke="#fff" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M3 17h18M6 17V9m6 8V6m6 11V9M5 10c3 0 5-1 7-4 2 3 4 4 7 4"/>
+  </g>
+</svg>

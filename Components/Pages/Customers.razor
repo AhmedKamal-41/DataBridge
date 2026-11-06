@@ -4,10 +4,14 @@
 
 <PageTitle>Customers</PageTitle>
 
-<h1>Customers</h1>
+<section class="page-heading">
+    <div><p class="eyebrow">Workspace</p><h1>Customers</h1><p>Find and review the customer records saved to this workspace.</p></div>
+</section>
 
-<section class="panel">
-    <h2>Ask in plain English</h2>
+<section class="panel ai-panel">
+    <div class="panel-heading">
+        <div><p class="eyebrow">AI-assisted search</p><h2>Ask in plain English</h2><p class="muted">Search by location, company, name, or status. Questions are sent to OpenAI.</p></div>
+    </div>
     <div class="field-row" style="margin-bottom: 0">
         <label class="field ai-question">
             Question
@@ -28,7 +32,7 @@
 </section>
 
 <section class="panel">
-    <h2>Filter</h2>
+    <h2>Manual filters</h2>
     <div class="field-row" style="margin-bottom: 0">
         <label class="field">Location <input @bind="locationFilter" /></label>
         <label class="field">
@@ -45,6 +49,7 @@
 </section>
 
 <section class="panel">
+    <h2>Customer directory</h2>
     @if (errorMessage != null)
     {
         <div class="notice error" role="alert">@errorMessage</div>
@@ -60,7 +65,7 @@
         {
             <AppliedFilterList Filters="appliedFilters" />
         }
-        <p class="muted">No customers match these filters.</p>
+        <div class="empty-state"><strong>No customers match these filters.</strong><p>Try a different search or clear the filters.</p></div>
     }
     else
     {
@@ -85,12 +90,12 @@
                     @foreach (CustomerDto customer in customers.Items)
                     {
                         <tr>
-                            <td>@customer.Name</td>
+                            <td class="record-name">@customer.Name</td>
                             <td>@customer.Company</td>
                             <td>@customer.Email</td>
                             <td>@customer.Phone</td>
                             <td>@customer.Location</td>
-                            <td>@customer.Status</td>
+                            <td><span class="badge @(customer.Status == "Active" ? "good" : "")">@customer.Status</span></td>
                             <td>@customer.Notes</td>
                         </tr>
                     }

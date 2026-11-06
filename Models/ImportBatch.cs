@@ -4,6 +4,7 @@ namespace DataBridge.Models;
 public class ImportBatch
 {
     public int Id { get; set; }
+    public Guid WorkspaceId { get; set; }
     public string FileName { get; set; } = string.Empty;
 
     // JSON array of the headers, in file order. Empty until the file is parsed.

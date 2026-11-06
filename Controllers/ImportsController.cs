@@ -10,7 +10,7 @@ namespace DataBridge.Controllers;
 
 [ApiController]
 [Route("api/imports")]
-[Authorize(Roles = AppRoles.AdminOrReviewer)]
+[Authorize(Roles = AppRoles.ImportReviewers)]
 public class ImportsController : ControllerBase
 {
     private readonly IImportService _importService;
@@ -25,7 +25,7 @@ public class ImportsController : ControllerBase
 
     // POST /api/imports
     [HttpPost]
-    [Authorize(Roles = AppRoles.Admin)]
+    [Authorize(Roles = AppRoles.ImportManagers)]
     public async Task<IActionResult> Upload([FromForm] UploadImportRequest request)
     {
         try
@@ -80,7 +80,7 @@ public class ImportsController : ControllerBase
 
     // PUT /api/imports/5/mapping
     [HttpPut("{batchId}/mapping")]
-    [Authorize(Roles = AppRoles.Admin)]
+    [Authorize(Roles = AppRoles.ImportManagers)]
     public async Task<IActionResult> SaveMapping(int batchId, SaveColumnMappingRequest request)
     {
         try
@@ -161,7 +161,7 @@ public class ImportsController : ControllerBase
 
     // POST /api/imports/5/commit
     [HttpPost("{batchId}/commit")]
-    [Authorize(Roles = AppRoles.Admin)]
+    [Authorize(Roles = AppRoles.ImportManagers)]
     public async Task<IActionResult> Commit(int batchId)
     {
         try

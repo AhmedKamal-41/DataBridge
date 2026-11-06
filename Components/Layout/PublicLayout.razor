@@ -1,0 +1,23 @@
+@inherits LayoutComponentBase
+
+<a class="skip-link" href="#main-content">Skip to content</a>
+<header class="public-header">
+    <div class="public-container public-nav">
+        <a class="brand-link" href="/"><BrandMark /></a>
+        <nav aria-label="Main navigation">
+            <a class="public-workflow-link" href="/#workflow">Workflow</a>
+            <ThemeToggle />
+            <AuthorizeView>
+                <Authorized><a class="button-link secondary" href="/workspace">Open workspace</a></Authorized>
+                <NotAuthorized><a class="button-link secondary" href="/login">Sign in</a></NotAuthorized>
+            </AuthorizeView>
+        </nav>
+    </div>
+</header>
+<main id="main-content">@Body</main>
+<footer class="public-footer">
+    <div class="public-container">
+        <a class="brand-link" href="/"><BrandMark /></a>
+        <p>Customer imports, reviewed before they’re saved.</p>
+    </div>
+</footer>

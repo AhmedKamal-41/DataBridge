@@ -1,23 +1,35 @@
 @page "/imports"
-@attribute [Authorize(Roles = AppRoles.AdminOrReviewer)]
+@attribute [Authorize(Roles = AppRoles.ImportReviewers)]
 @inject DataBridgeApiClient ApiClient
 @inject NavigationManager Navigation
 
 <PageTitle>Imports</PageTitle>
 
-<h1>Imports</h1>
+<section class="page-heading">
+    <div><p class="eyebrow">Workspace</p><h1>Imports</h1><p>Upload spreadsheets and review each batch before committing changes.</p></div>
+</section>
 
-<AuthorizeView Roles="@AppRoles.Admin">
+<AuthorizeView Roles="@AppRoles.ImportManagers">
 <section class="panel">
-    <h2>Upload a CSV or Excel file</h2>
+    <div class="panel-heading">
+        <div>
+            <h2>Upload a file</h2>
+            <p class="muted">@(context.User.IsInRole(AppRoles.Guest) ? $"Guest limit of 1 MB and {GuestWorkspace.MaxRowsPerImport} data rows per file." : "Start a new batch from a CSV or Excel workbook.")</p>
+        </div>
+    </div>
 
     @if (uploadError != null)
     {
         <div class="notice error" role="alert">@uploadError</div>
     }
 
-    <div class="actions">
-        <InputFile OnChange="SelectFile" accept=".csv,.xlsx" aria-label="CSV or Excel file" />
+    <label class="upload-dropzone">
+        <span class="upload-symbol" aria-hidden="true">↑</span>
+        <strong>@(selectedFile?.Name ?? "Choose a CSV or Excel file")</strong>
+        <span class="muted">Select a file or drop it here · .csv or .xlsx</span>
+        <InputFile class="upload-input" OnChange="SelectFile" accept=".csv,.xlsx" aria-label="CSV or Excel file" />
+    </label>
+    <div class="actions upload-actions">
         <button type="button" disabled="@(selectedFile == null || isUploading)" @onclick="UploadAsync">
             @(isUploading ? "Uploading..." : "Upload")
         </button>
@@ -26,7 +38,7 @@
 </AuthorizeView>
 
 <section class="panel">
-    <h2>Batches</h2>
+    <div class="panel-heading"><div><h2>Import history</h2><p class="muted">Track validation, reviews, and completed batches.</p></div></div>
 
     @if (errorMessage != null)
     {
@@ -39,7 +51,7 @@
     }
     else if (batches.Items.Count == 0)
     {
-        <p class="muted">No files have been uploaded yet.</p>
+        <div class="empty-state"><strong>No files have been uploaded yet.</strong><p>New batches will appear here after upload.</p></div>
     }
     else
     {
@@ -54,7 +66,7 @@
                         <tr>
                             <td>@batch.Id</td>
                             <td><a href="imports/@batch.Id">@batch.FileName</a></td>
-                            <td>@batch.Status</td>
+                            <td><span class="badge @(batch.Status == "Committed" ? "good" : "")">@batch.Status</span></td>
                             <td>@batch.Job.Stage</td>
                             <td>@batch.RowCount</td>
                         </tr>
@@ -67,6 +79,8 @@
 </section>
 
 @code {
+    [CascadingParameter] private Task<AuthenticationState> AuthenticationState { get; set; } = null!;
+
     private const int PageSize = 25;
 
     // Only the most this page will read from the browser. The configured upload
@@ -113,7 +127,9 @@
             return;
         }
 
-        if (selectedFile.Size > MaxBrowserFileBytes)
+        bool isGuest = (await AuthenticationState).User.IsInRole(AppRoles.Guest);
+        long fileLimit = isGuest ? GuestWorkspace.MaxFileBytes : MaxBrowserFileBytes;
+        if (selectedFile.Size > fileLimit)
         {
             uploadError = $"{selectedFile.Name} is too large to upload.";
             return;
@@ -124,7 +140,7 @@
 
         try
         {
-            await using Stream fileStream = selectedFile.OpenReadStream(MaxBrowserFileBytes);
+            await using Stream fileStream = selectedFile.OpenReadStream(fileLimit);
             ImportAcceptedDto accepted = await ApiClient.UploadAsync(selectedFile.Name, fileStream);
 
             Navigation.NavigateTo($"imports/{accepted.BatchId}");

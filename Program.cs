@@ -9,6 +9,7 @@ using Hangfire;
 using Hangfire.SqlServer;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
+using System.Threading.RateLimiting;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -44,6 +45,14 @@ builder.Services.AddAntiforgery(options =>
     options.HeaderName = DataBridgeApiClient.AntiforgeryHeaderName;
 });
 
+builder.Services.AddRateLimiter(options =>
+{
+    options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+    options.AddPolicy(GuestWorkspaceService.EntryRateLimit, context =>
+        RateLimitPartition.GetFixedWindowLimiter(context.Connection.RemoteIpAddress?.ToString() ?? "local", _ =>
+            new FixedWindowRateLimiterOptions { PermitLimit = 16, Window = TimeSpan.FromMinutes(5) }));
+});
+
 // Gives each request its own DataBridgeDbContext, connected to SQL Server.
 string connectionString = builder.Configuration.GetConnectionString("DataBridge")
     ?? throw new InvalidOperationException("Connection string 'DataBridge' is missing.");
@@ -73,6 +82,8 @@ builder.Services.ConfigureApplicationCookie(options =>
     options.AccessDeniedPath = "/access-denied";
     options.ReturnUrlParameter = "returnUrl";
     options.Cookie.HttpOnly = true;
+    options.Events.OnValidatePrincipal = GuestWorkspaceService.ValidateCookieAsync;
+    options.Cookie.HttpOnly = true;
 
     // A browser page gets redirected. An API caller gets a status code, with a body
     // so that the status code pages middleware leaves the response alone.
@@ -89,6 +100,7 @@ builder.Services.ConfigureApplicationCookie(options =>
 builder.Services.AddCascadingAuthenticationState();
 
 builder.Services.AddScoped<BrowserSession>();
+builder.Services.AddScoped<GuestWorkspaceService>();
 builder.Services.AddScoped<ImportService>();
 builder.Services.AddScoped<IImportService>(services => services.GetRequiredService<ImportService>());
 builder.Services.AddScoped<IImportJobWork>(services => services.GetRequiredService<ImportService>());
@@ -157,6 +169,7 @@ await IdentitySeeder.SeedAsync(
 var recurringJobs = app.Services.GetRequiredService<IRecurringJobManager>();
 recurringJobs.AddOrUpdate<IImportJobQueue>("recover-import-jobs", queue => queue.RecoverPendingWorkAsync(), Cron.Minutely());
 recurringJobs.Trigger("recover-import-jobs");
+recurringJobs.AddOrUpdate<GuestWorkspaceService>("delete-expired-guest-workspaces", workspace => workspace.DeleteExpiredAsync(), Cron.Hourly());
 
 // Configure the HTTP request pipeline.
 if (!app.Environment.IsDevelopment())
@@ -170,6 +183,7 @@ app.UseHttpsRedirection();
 
 app.UseAuthentication();
 app.UseAuthorization();
+app.UseRateLimiter();
 app.UseAntiforgery();
 
 app.MapStaticAssets();

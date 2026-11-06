@@ -1,39 +1,62 @@
-﻿@inherits LayoutComponentBase
+@inherits LayoutComponentBase
 @inject BrowserSession Session
 
-<header class="site-header">
-    <a class="site-name" href="">DataBridge</a>
-    <nav aria-label="Main">
-        <AuthorizeView Roles="@AppRoles.AdminOrReviewer">
-            <NavLink href="imports">Imports</NavLink>
-        </AuthorizeView>
-        <AuthorizeView Roles="@AppRoles.AnyRole">
-            <NavLink href="customers">Customers</NavLink>
-        </AuthorizeView>
-    </nav>
-    <div class="site-account">
-        <AuthorizeView>
-            <Authorized>
-                <span data-testid="signed-in-user">@context.User.Identity?.Name</span>
-                @* A plain form: signing out has to clear a cookie, which needs a normal page request. *@
-                <form method="post" action="account/logout" data-enhance="false">
-                    <input type="hidden" name="__RequestVerificationToken" value="@Session.AntiforgeryToken" />
-                    <button type="submit" class="secondary">Sign out</button>
-                </form>
-            </Authorized>
-            <NotAuthorized>
-                <a href="login">Sign in</a>
-            </NotAuthorized>
-        </AuthorizeView>
-    </div>
-</header>
+<a class="skip-link" href="#main-content">Skip to content</a>
+<div class="app-shell">
+    <aside class="app-sidebar">
+        <a class="brand-link" href="/"><BrandMark /></a>
+        <nav aria-label="Workspace navigation">
+            <p class="sidebar-label">Workspace</p>
+            <NavLink href="workspace" Match="NavLinkMatch.All">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+                Overview
+            </NavLink>
+            <AuthorizeView Roles="@AppRoles.ImportReviewers">
+                <NavLink href="imports">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m-4-4 4 4 4-4M4 16v4h16v-4"/></svg>
+                    Imports
+                </NavLink>
+            </AuthorizeView>
+            <AuthorizeView Roles="@AppRoles.AnyRole">
+                <NavLink href="customers">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="8" r="3"/><path d="M3 20v-2a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v2m2-15a3 3 0 0 1 0 6m1 3a4 4 0 0 1 3 4v2"/></svg>
+                    Customers
+                </NavLink>
+            </AuthorizeView>
+        </nav>
+        <div class="sidebar-footer"><span class="signal-dot"></span> Customer data platform</div>
+    </aside>
 
-<main class="page">
-    @Body
-</main>
+    <div class="workspace-body">
+        <header class="workspace-topbar">
+            <a class="brand-link mobile-brand" href="/"><BrandMark /></a>
+            <span class="workspace-topbar-label">Data workspace</span>
+            <div class="workspace-account">
+                <ThemeToggle />
+                <AuthorizeView>
+                    <Authorized>
+                        @if (context.User.IsInRole(AppRoles.Guest))
+                        {
+                            <span class="session-tag" data-testid="signed-in-user">Guest workspace</span>
+                        }
+                        else
+                        {
+                            <span class="account-name" data-testid="signed-in-user">@context.User.Identity?.Name</span>
+                        }
+                        <form method="post" action="/account/logout" data-enhance="false">
+                            <input type="hidden" name="__RequestVerificationToken" value="@Session.AntiforgeryToken" />
+                            <button type="submit" class="secondary">@(context.User.IsInRole(AppRoles.Guest) ? "Exit guest" : "Sign out")</button>
+                        </form>
+                    </Authorized>
+                    <NotAuthorized><a class="button-link secondary" href="/login">Sign in</a></NotAuthorized>
+                </AuthorizeView>
+            </div>
+        </header>
+        <main id="main-content" class="page workspace-page">@Body</main>
+    </div>
+</div>
 
 <div id="blazor-error-ui" data-nosnippet>
-    An unhandled error has occurred.
-    <a href="." class="reload">Reload</a>
+    An error interrupted this page. <a href="." class="reload">Reload</a>
     <span class="dismiss">🗙</span>
 </div>

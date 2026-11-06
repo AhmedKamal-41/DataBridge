@@ -19,6 +19,11 @@ public class DataBridgeDbContext : IdentityDbContext<IdentityUser>
     public DbSet<ImportAuditEntry> ImportAuditEntries => Set<ImportAuditEntry>();
     public DbSet<ImportBatchJob> ImportBatchJobs => Set<ImportBatchJob>();
     public DbSet<ImportBatchFile> ImportBatchFiles => Set<ImportBatchFile>();
+    public DbSet<GuestWorkspace> GuestWorkspaces => Set<GuestWorkspace>();
+
+    // Member data uses Guid.Empty. A validated guest cookie or a worker selects
+    // its workspace before it queries customer or import data.
+    internal Guid WorkspaceId { get; set; }
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -32,6 +37,20 @@ public class DataBridgeDbContext : IdentityDbContext<IdentityUser>
         ConfigureImportAuditEntry(modelBuilder);
         ConfigureImportBatchJob(modelBuilder);
         ConfigureImportBatchFile(modelBuilder);
+
+        modelBuilder.Entity<Customer>().HasQueryFilter(customer => customer.WorkspaceId == WorkspaceId);
+        modelBuilder.Entity<ImportBatch>().HasQueryFilter(batch => batch.WorkspaceId == WorkspaceId);
+        modelBuilder.Entity<ImportRow>().HasQueryFilter(row => row.Batch.WorkspaceId == WorkspaceId);
+        modelBuilder.Entity<ImportIssue>().HasQueryFilter(issue => issue.Row.Batch.WorkspaceId == WorkspaceId);
+        modelBuilder.Entity<ImportAuditEntry>().HasQueryFilter(entry => entry.Batch != null && entry.Batch.WorkspaceId == WorkspaceId);
+        modelBuilder.Entity<ImportBatchJob>().HasQueryFilter(job => job.Batch.WorkspaceId == WorkspaceId);
+        modelBuilder.Entity<ImportBatchFile>().HasQueryFilter(file => file.Batch.WorkspaceId == WorkspaceId);
+
+        modelBuilder.Entity<GuestWorkspace>(workspace =>
+        {
+            workspace.Property(value => value.TokenHash).HasMaxLength(64).IsUnicode(false);
+            workspace.HasIndex(value => value.TokenHash).IsUnique();
+        });
     }
 
     private static void ConfigureCustomer(ModelBuilder modelBuilder)
@@ -53,7 +72,8 @@ public class DataBridgeDbContext : IdentityDbContext<IdentityUser>
 
             customer.Property(c => c.RowVersion).IsRowVersion();
 
-            customer.HasIndex(c => c.NormalizedEmail).IsUnique();
+            customer.Property(c => c.WorkspaceId).HasDefaultValue(Guid.Empty);
+            customer.HasIndex(c => new { c.WorkspaceId, c.NormalizedEmail }).IsUnique();
         });
     }
 
@@ -71,6 +91,8 @@ public class DataBridgeDbContext : IdentityDbContext<IdentityUser>
             batch.Property(b => b.Status).HasConversion<string>().HasMaxLength(20);
 
             batch.Property(b => b.RowVersion).IsRowVersion();
+            batch.Property(b => b.WorkspaceId).HasDefaultValue(Guid.Empty);
+            batch.HasIndex(b => new { b.WorkspaceId, b.Id });
 
             // Deleting a batch also deletes its staged rows.
             batch.HasMany(b => b.Rows)
@@ -141,7 +163,7 @@ public class DataBridgeDbContext : IdentityDbContext<IdentityUser>
             job.Property(j => j.Stage).HasConversion<string>().HasMaxLength(20);
             job.Property(j => j.Error).HasMaxLength(1000);
 
-            job.HasOne<ImportBatch>()
+            job.HasOne(j => j.Batch)
                 .WithOne(b => b.Job)
                 .HasForeignKey<ImportBatchJob>(j => j.ImportBatchId)
                 .OnDelete(DeleteBehavior.Cascade);
@@ -157,7 +179,7 @@ public class DataBridgeDbContext : IdentityDbContext<IdentityUser>
             file.HasKey(f => f.ImportBatchId);
             file.Property(f => f.Content).IsRequired();
 
-            file.HasOne<ImportBatch>()
+            file.HasOne(f => f.Batch)
                 .WithOne(b => b.File)
                 .HasForeignKey<ImportBatchFile>(f => f.ImportBatchId)
                 .OnDelete(DeleteBehavior.Cascade);
@@ -173,10 +195,8 @@ public class DataBridgeDbContext : IdentityDbContext<IdentityUser>
             entry.Property(e => e.Action).IsRequired().HasMaxLength(100);
             entry.Property(e => e.Actor).IsRequired().HasMaxLength(200);
 
-            // The audit trail must survive, so anything it points to cannot be
-            // deleted. ImportAuditEntry has only ID properties, which is why
-            // HasOne and WithMany name no navigation property.
-            entry.HasOne<ImportBatch>()
+            // Remove guest audit entries before their batches and customers.
+            entry.HasOne(e => e.Batch)
                 .WithMany()
                 .HasForeignKey(e => e.ImportBatchId)
                 .OnDelete(DeleteBehavior.Restrict);

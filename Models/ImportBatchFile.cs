@@ -5,5 +5,6 @@ namespace DataBridge.Models;
 public class ImportBatchFile
 {
     public int ImportBatchId { get; set; }
+    public ImportBatch Batch { get; set; } = null!;
     public byte[] Content { get; set; } = Array.Empty<byte>();
 }

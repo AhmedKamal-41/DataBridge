@@ -1,0 +1,163 @@
+@page "/workspace"
+@attribute [Authorize(Roles = AppRoles.AnyRole)]
+@inject DataBridgeApiClient ApiClient
+@inject IWebHostEnvironment Environment
+@inject NavigationManager Navigation
+
+<PageTitle>Overview | DataBridge</PageTitle>
+
+<section class="page-heading">
+    <div>
+        <p class="eyebrow">Workspace</p>
+        <h1>Overview</h1>
+        <p>Import files, review changes, and manage your customer records.</p>
+    </div>
+    @if (canManage)
+    {
+        <a class="button-link" href="/imports">New import <span aria-hidden="true">→</span></a>
+    }
+</section>
+
+@if (isGuest)
+{
+    <section class="guest-banner" aria-labelledby="sample-title">
+        <div>
+            <p class="eyebrow"><span class="signal-dot"></span> Guest demo</p>
+            <h2 id="sample-title">Start with a sample import</h2>
+            <p>Try a file with a new record, a duplicate, a conflict, and a row to correct. Your changes belong to this temporary workspace.</p>
+            @if (sampleError != null)
+            {
+                <p class="notice error" role="alert">@sampleError</p>
+            }
+        </div>
+        <div class="guest-banner-actions">
+            <button type="button" disabled="@isLoadingSample" @onclick="ImportSampleAsync">@(isLoadingSample ? "Opening sample…" : "Import sample file")</button>
+            <a href="/sample-customers.csv" download>Download CSV</a>
+        </div>
+    </section>
+}
+
+@if (errorMessage != null)
+{
+    <div class="notice error" role="alert">@errorMessage</div>
+}
+
+<div class="overview-stats">
+    <article class="stat-card">
+        <span>Customer records</span><strong>@(customers?.TotalCount.ToString("N0") ?? "—")</strong>
+        <a href="/customers">View directory <span aria-hidden="true">→</span></a>
+    </article>
+    @if (canReview)
+    {
+        <article class="stat-card">
+            <span>Import batches</span><strong>@(imports?.TotalCount.ToString("N0") ?? "—")</strong>
+            <a href="/imports">View imports <span aria-hidden="true">→</span></a>
+        </article>
+        <article class="stat-card">
+            <span>Latest import</span><strong class="stat-text">@LatestStatus</strong>
+            <span>Most recent batch status</span>
+        </article>
+    }
+</div>
+
+@if (canReview)
+{
+    <section class="panel recent-panel" aria-labelledby="recent-title">
+        <div class="panel-heading">
+            <div><h2 id="recent-title">Recent imports</h2><p class="muted">Pick up a batch where you left off.</p></div>
+            <a class="button-link secondary" href="/imports">All imports</a>
+        </div>
+        @if (imports == null && errorMessage == null)
+        {
+            <p class="muted" role="status">Loading imports…</p>
+        }
+        else if (imports?.Items.Count == 0)
+        {
+            <div class="empty-state"><strong>No imports yet</strong><p>Uploaded files and review progress will appear here.</p></div>
+        }
+        else if (imports != null)
+        {
+            <div class="table-scroll">
+                <table>
+                    <thead><tr><th>File</th><th>Status</th><th>Rows</th></tr></thead>
+                    <tbody>
+                        @foreach (ImportBatchDto batch in imports.Items)
+                        {
+                            <tr>
+                                <td><a href="imports/@batch.Id">@batch.FileName</a></td>
+                                <td><span class="badge">@batch.Status</span></td>
+                                <td>@batch.RowCount</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
+    </section>
+}
+
+@code {
+    [CascadingParameter] private Task<AuthenticationState> AuthenticationState { get; set; } = null!;
+
+    private bool canManage;
+    private bool canReview;
+    private bool isGuest;
+    private bool isLoadingSample;
+    private string? errorMessage;
+    private string? sampleError;
+    private PagedResponse<CustomerDto>? customers;
+    private PagedResponse<ImportBatchDto>? imports;
+
+    private string LatestStatus => imports?.Items.FirstOrDefault()?.Status switch
+    {
+        "ReadyForReview" => "Ready for review",
+        string status => status,
+        _ => "—"
+    };
+
+    protected override async Task OnInitializedAsync()
+    {
+        var user = (await AuthenticationState).User;
+        isGuest = user.IsInRole(AppRoles.Guest);
+        canManage = isGuest || user.IsInRole(AppRoles.Admin);
+        canReview = canManage || user.IsInRole(AppRoles.Reviewer);
+
+        try
+        {
+            customers = await ApiClient.GetCustomersAsync(1, 1, null, null);
+            if (canReview)
+            {
+                imports = await ApiClient.GetBatchesAsync(1, 5);
+            }
+        }
+        catch (ApiException exception)
+        {
+            errorMessage = exception.Message;
+        }
+    }
+
+    private async Task ImportSampleAsync()
+    {
+        isLoadingSample = true;
+        sampleError = null;
+        try
+        {
+            const string sampleFileName = "sample-customers.csv";
+            await using Stream file = Environment.WebRootFileProvider.GetFileInfo(sampleFileName).CreateReadStream();
+            ImportAcceptedDto accepted = await ApiClient.UploadAsync(sampleFileName, file);
+            Navigation.NavigateTo($"imports/{accepted.BatchId}");
+        }
+        catch (ApiException exception)
+        {
+            sampleError = exception.Message;
+        }
+        catch (IOException)
+        {
+            sampleError = "The sample file could not be opened. Try uploading a CSV from Imports.";
+        }
+        finally
+        {
+            isLoadingSample = false;
+        }
+    }
+}

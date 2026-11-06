@@ -33,6 +33,7 @@ public class ImportJobQueue : IImportJobQueue
 
             DateTime now = DateTime.UtcNow;
             await _db.ImportBatchJobs
+                .IgnoreQueryFilters()
                 .Where(job => job.ImportBatchId == batchId)
                 .ExecuteUpdateAsync(setters => setters.SetProperty(job => job.EnqueuedAtUtc, now));
         }
@@ -47,6 +48,7 @@ public class ImportJobQueue : IImportJobQueue
         DateTime stalledBefore = DateTime.UtcNow - StalledAfter;
 
         List<int> batchIds = await _db.ImportBatchJobs
+            .IgnoreQueryFilters()
             .AsNoTracking()
             .Where(job => job.Stage != ImportJobStage.Completed && job.Stage != ImportJobStage.Failed)
             .Where(job => job.EnqueuedAtUtc == null || job.UpdatedAtUtc < stalledBefore)

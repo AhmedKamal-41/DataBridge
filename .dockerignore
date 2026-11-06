@@ -19,5 +19,6 @@ compose*.yaml
 Dockerfile
 .dockerignore
 README.md
+docs/
 DataBridge.http
 customers-sample.*

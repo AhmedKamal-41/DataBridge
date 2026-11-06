@@ -9,6 +9,8 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <base href="/" />
+    @* A blocking script: it sets the theme before the browser can paint the page. *@
+    <script src="@Assets["theme.js"]"></script>
     <ResourcePreloader />
     <link rel="stylesheet" href="@Assets["app.css"]" />
     <link rel="stylesheet" href="@Assets["DataBridge.styles.css"]" />
@@ -20,6 +22,7 @@
     <Routes @rendermode="PageRenderMode" CookieHeader="@cookieHeader" AntiforgeryToken="@antiforgeryToken" />
     <ReconnectModal />
     <script src="@Assets["_framework/blazor.web.js"]"></script>
+    <script type="module" src="@Assets["guest-entry.js"]"></script>
 </body>
 
 </html>

@@ -13,6 +13,7 @@ public class Customer
     public const int NotesMaxLength = 2000;
 
     public int Id { get; set; }
+    public Guid WorkspaceId { get; set; }
     public string Name { get; set; } = string.Empty;
     public string? Company { get; set; }
     public string Email { get; set; } = string.Empty;

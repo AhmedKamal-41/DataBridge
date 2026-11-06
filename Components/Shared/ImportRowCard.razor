@@ -5,7 +5,7 @@
         <span>Source row @Row.SourceRowNumber</span>
         @if (Row.MatchResult != null)
         {
-            <span class="badge @(Row.MatchResult == "Conflict" ? "warn" : "")">@Row.MatchResult</span>
+            <span class="badge @MatchBadgeClass">@Row.MatchResult</span>
         }
         @if (Row.Issues.Count > 0)
         {
@@ -156,6 +156,13 @@
     // Called after this row changes or goes stale. The page reloads every row,
     // because a change here can affect others, such as a repeated email.
     [Parameter] public EventCallback<string?> OnChanged { get; set; }
+
+    private string MatchBadgeClass => Row.MatchResult switch
+    {
+        "Conflict" => "warn",
+        "Duplicate" => "duplicate",
+        _ => ""
+    };
 
     private CorrectImportRowRequest correction = new CorrectImportRowRequest();
     private bool isEditing;

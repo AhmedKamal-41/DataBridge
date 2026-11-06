@@ -1,0 +1,5 @@
+Name,Company,Email,Phone,Location,Status,Notes
+Avery Patel,Northline Supply,avery@example.test,,Brooklyn,Active,Location updated
+Casey Morgan,Harbor Supply,casey@example.test,2125550104,Queens,Active,New customer
+Morgan Lee,Fieldwork Studio,morgan@example.test,,Brooklyn,Active,
+Taylor Quinn,Fieldwork Studio,missing-email,,Queens,Active,Correct this email in review
