@@ -25,7 +25,10 @@ X-CSRF-TOKEN: {{csrfToken}}
 @batchId = 1
 
 ### Health check
-GET {{baseUrl}}/api/health
+GET {{baseUrl}}/api/health/ready
+
+### Liveness: the app process answers, without touching SQL Server
+GET {{baseUrl}}/api/health/live
 Accept: application/json
 
 ### 1. Upload: expect 202 with batchId and statusUrl. Poll request 3 until job.stage is Completed.
@@ -137,16 +140,29 @@ Content-Type: application/json
   "draftNotes": "Prefers email, not phone"
 }
 
-### 14. Approve a New row for insert: expect 200
+### 14. Approve a New row for insert: expect 200, or 409 if the row has changed.
+# rowVersion comes from the row preview.
 PUT {{baseUrl}}/api/imports/{{batchId}}/rows/{{rowId}}/decision
 X-CSRF-TOKEN: {{csrfToken}}
 Content-Type: application/json
 
 {
-  "decision": "Approved"
+  "decision": "Approved",
+  "rowVersion": "{{rowVersion}}"
 }
 
-### 15. Approve a Conflict as an update: expect 200, or 409 if the customer has changed
+### 14b. Approve selected New rows together: expect 200, or 409 with nothing approved
+POST {{baseUrl}}/api/imports/{{batchId}}/rows/bulk-approve
+X-CSRF-TOKEN: {{csrfToken}}
+Content-Type: application/json
+
+{
+  "rows": [
+    { "rowId": {{rowId}}, "rowVersion": "{{rowVersion}}" }
+  ]
+}
+
+### 15. Approve a Conflict as an update: expect 200, or 409 if the row or customer has changed
 PUT {{baseUrl}}/api/imports/{{batchId}}/rows/{{rowId}}/decision
 X-CSRF-TOKEN: {{csrfToken}}
 Content-Type: application/json
@@ -154,6 +170,7 @@ Content-Type: application/json
 {
   "decision": "Approved",
   "confirmUpdate": true,
+  "rowVersion": "{{rowVersion}}",
   "customerVersion": "{{customerVersion}}"
 }
 
@@ -167,7 +184,7 @@ Content-Type: application/json
   "reason": "Already in the customer list"
 }
 
-### 17. Commit once every row has a decision: expect 200 with the summary.
+### 17. Commit once every row has a decision: expect 200 with the summary, even if every row was rejected.
 # Repeating it returns the same summary. Stale approvals return 409.
 POST {{baseUrl}}/api/imports/{{batchId}}/commit
 X-CSRF-TOKEN: {{csrfToken}}

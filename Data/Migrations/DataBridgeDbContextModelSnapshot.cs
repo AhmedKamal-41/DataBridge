@@ -22,6 +22,19 @@ namespace DataBridge.Data.Migrations
 
             SqlServerModelBuilderExtensions.UseIdentityColumns(modelBuilder);
 
+            modelBuilder.Entity("DataBridge.Models.AiUsageDay", b =>
+                {
+                    b.Property<DateOnly>("Day")
+                        .HasColumnType("date");
+
+                    b.Property<int>("Calls")
+                        .HasColumnType("int");
+
+                    b.HasKey("Day");
+
+                    b.ToTable("AiUsageDays", (string)null);
+                });
+
             modelBuilder.Entity("DataBridge.Models.Customer", b =>
                 {
                     b.Property<int>("Id")
@@ -364,6 +377,12 @@ namespace DataBridge.Data.Migrations
                         .IsRequired()
                         .HasMaxLength(20)
                         .HasColumnType("nvarchar(20)");
+
+                    b.Property<byte[]>("RowVersion")
+                        .IsConcurrencyToken()
+                        .IsRequired()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("rowversion");
 
                     b.Property<int>("SourceRowNumber")
                         .HasColumnType("int");

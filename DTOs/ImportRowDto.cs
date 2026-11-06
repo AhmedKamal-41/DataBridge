@@ -33,4 +33,7 @@ public class ImportRowDto
     // "Pending", "Approved" or "Rejected".
     public string ReviewDecision { get; set; } = string.Empty;
     public string? DecisionReason { get; set; }
+
+    // Send this back when approving, to show which version of the row was reviewed.
+    public byte[] RowVersion { get; set; } = Array.Empty<byte>();
 }

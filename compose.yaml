@@ -13,6 +13,9 @@ x-app: &app
     Secrets__Directory: /run/secrets/app
     Seed__Enabled: "true"
     OpenAI__Model: ${OPENAI_MODEL:-gpt-6-astra}
+    OpenAI__MaxCallsPerDay: ${OPENAI_MAX_CALLS_PER_DAY:-1000}
+    Import__RawFileRetention__Enabled: ${IMPORT_RAW_FILE_RETENTION_ENABLED:-false}
+    Import__RawFileRetention__Days: ${IMPORT_RAW_FILE_RETENTION_DAYS:-90}
   secrets:
     - sql_sa_password
 
@@ -73,7 +76,7 @@ services:
         - CMD
         - bash
         - -c
-        - exec 3<>/dev/tcp/127.0.0.1/8080 && printf 'GET /api/health HTTP/1.0\r\n\r\n' >&3 && grep -q '200 OK' <&3
+        - exec 3<>/dev/tcp/127.0.0.1/8080 && printf 'GET /api/health/ready HTTP/1.0\r\n\r\n' >&3 && grep -q '200 OK' <&3
       interval: 5s
       timeout: 5s
       retries: 24

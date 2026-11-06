@@ -52,9 +52,19 @@ public class CustomersController : ControllerBase
         }
         catch (AiSearchException exception)
         {
-            int statusCode = exception.ErrorType == AiSearchErrorType.InvalidOutput
-                ? StatusCodes.Status502BadGateway
-                : StatusCodes.Status503ServiceUnavailable;
+            // The shared cap stopped this before any paid call, so it doesn't use up
+            // one of the guest's own searches.
+            if (exception.ErrorType == AiSearchErrorType.CapReached && User.IsInRole(AppRoles.Guest))
+            {
+                await _guestWorkspaces.ReleaseAiSearchAsync();
+            }
+
+            int statusCode = exception.ErrorType switch
+            {
+                AiSearchErrorType.InvalidOutput => StatusCodes.Status502BadGateway,
+                AiSearchErrorType.CapReached => StatusCodes.Status429TooManyRequests,
+                _ => StatusCodes.Status503ServiceUnavailable
+            };
 
             return Problem(detail: exception.Message, statusCode: statusCode);
         }

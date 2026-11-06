@@ -2,6 +2,12 @@
 
 <div class="row-card" data-source-row="@Row.SourceRowNumber">
     <div class="row-card-title">
+        @if (CanSelect)
+        {
+            <input type="checkbox" checked="@IsSelected" disabled="@ActionsDisabled"
+                   aria-label="Select source row @Row.SourceRowNumber for bulk approval"
+                   @onchange="args => OnSelectionChanged.InvokeAsync((bool)args.Value!)" />
+        }
         <span>Source row @Row.SourceRowNumber</span>
         @if (Row.MatchResult != null)
         {
@@ -157,6 +163,17 @@
     // because a change here can affect others, such as a repeated email.
     [Parameter] public EventCallback<string?> OnChanged { get; set; }
 
+    [Parameter] public bool IsSelected { get; set; }
+    [Parameter] public EventCallback<bool> OnSelectionChanged { get; set; }
+
+    private bool CanSelect => CanReview && IsBulkApprovable(Row);
+
+    // Conflicts aren't eligible: each one needs its own confirmation.
+    public static bool IsBulkApprovable(ImportRowDto row)
+    {
+        return row.MatchResult == "New" && row.Issues.Count == 0 && row.ReviewDecision == "Pending";
+    }
+
     private string MatchBadgeClass => Row.MatchResult switch
     {
         "Conflict" => "warn",
@@ -172,6 +189,27 @@
     private string? errorMessage;
 
     private bool ActionsDisabled => isSaving;
+
+    private byte[]? confirmedRowVersion;
+    private byte[]? confirmedCustomerVersion;
+
+    // The confirmation only applies to the values it was given for. If a reload brings
+    // a newer row or customer, the reviewer has to look and confirm again.
+    protected override void OnParametersSet()
+    {
+        if (!SameVersion(confirmedRowVersion, Row.RowVersion) || !SameVersion(confirmedCustomerVersion, Row.MatchedCustomerVersion))
+        {
+            updateConfirmed = false;
+        }
+
+        confirmedRowVersion = Row.RowVersion;
+        confirmedCustomerVersion = Row.MatchedCustomerVersion;
+    }
+
+    private static bool SameVersion(byte[]? first, byte[]? second)
+    {
+        return first == null || second == null ? first == second : first.SequenceEqual(second);
+    }
 
     private void StartEditing()
     {
@@ -203,8 +241,9 @@
             Decision = "Approved",
             ConfirmUpdate = isUpdate,
 
-            // The version this card is showing, not a fresh one: the service
-            // refuses it if the customer has changed since this preview loaded.
+            // The versions this card is showing, not fresh ones: the service refuses
+            // them if the row or customer has changed since this preview loaded.
+            RowVersion = Row.RowVersion,
             CustomerVersion = isUpdate ? Row.MatchedCustomerVersion : null
         };
 
@@ -218,7 +257,8 @@
         var request = new SaveRowDecisionRequest
         {
             Decision = "Rejected",
-            Reason = rejectionReason
+            Reason = rejectionReason,
+            RowVersion = Row.RowVersion
         };
 
         await RunAsync(

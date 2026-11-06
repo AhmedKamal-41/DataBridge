@@ -80,10 +80,14 @@ application data, the uploaded files, the Identity tables, and the Hangfire queu
   lengths, repeated emails within a file, and comparison with existing customers.
 - **Row-by-row review** — conflicts show current and incoming values side by side, invalid rows can
   be corrected in place, and a rejection needs a reason.
+- **Bulk approval** — approve explicitly selected New rows together. If any selection is stale or
+  ineligible, none are approved and the page says which rows need attention. Conflicts keep their
+  individual confirmation.
 - **All-or-nothing commit** — approved rows are saved together, with a summary of inserted, updated,
-  and rejected rows.
-- **Audit history** — validations, corrections, approvals, rejections, withdrawn approvals, customer
-  inserts and updates, and commits, with who did them and when.
+  and rejected rows. A fully rejected batch finishes too, with zero inserts and zero updates.
+- **Audit history** — uploads, mapping changes, validations, corrections, approvals, rejections,
+  withdrawn approvals, customer inserts and updates, commits, and raw file removal, with who did them
+  and when.
 - **Customer directory** — paged list with location and status filters.
 - **Optional AI search** — plain-English questions become validated search filters. Manual search
   works without it.
@@ -110,6 +114,11 @@ application data, the uploaded files, the Identity tables, and the Hangfire queu
 - **Old job results can't overwrite newer work.** A run number stops an older job from writing
   progress over a newer one. A `RowVersion` check on the batch rejects a validation save if a reviewer
   changed something first, and those results are discarded.
+
+- **An approval has to match what the reviewer saw.** Every row preview includes a row version, and
+  approving requires it. If another user corrected the row after the preview, the approval returns
+  `409`, with the decision and audit history untouched, and the page reloads the row and clears the
+  confirmation. Approving a conflict also checks the customer's version.
 
 - **Approvals expire when their facts change.** An approval stores a snapshot of the row and, for
   updates, the customer's `RowVersion` that the reviewer saw. If the row or customer changes,
@@ -146,7 +155,15 @@ application data, the uploaded files, the Identity tables, and the Hangfire queu
   be deleted once the account exists.
 
 - **Migrations run once, before the app.** The Compose `migrate` service runs the same image with
-  `--apply-migrations` and exits. `app` starts only after it succeeds.
+  `--apply-migrations` and exits. `app` starts only after it succeeds. In the production setup,
+  migrations use their own login, and the app's login can't change the schema.
+
+- **Health checks that tell the truth.** Compose checks `/api/health/ready`, which probes SQL Server
+  with a short timeout and returns `503` when it's unavailable. `/api/health/live` only says that the
+  process is running.
+
+- **A shared cap on paid AI calls.** A single database `UPDATE` reserves each call against a daily
+  total across all workspaces, so concurrent requests can't go over it.
 
 ## System architecture
 
@@ -208,14 +225,14 @@ flowchart TD
     G --> H{"Row has issues?"}
     H -->|"yes"| I["Issues listed<br/>correct and revalidate, or reject"]
     H -->|"no"| J{"Email matches<br/>a customer?"}
-    J -->|"no"| K["New<br/>approve or reject"]
+    J -->|"no"| K["New<br/>approve, bulk approve, or reject"]
     J -->|"yes, no field changes"| L["Duplicate<br/>reject with a reason"]
     J -->|"yes, values differ"| M["Conflict<br/>confirm update or reject"]
     I --> N["Status: ReadyForReview<br/>every row needs a decision"]
     K --> N
     L --> N
     M --> N
-    N --> O["POST commit<br/>checks approvals are still current"]
+    N --> O["POST commit<br/>checks approvals are still current<br/>zero approved rows is allowed"]
     O -->|"customer changed"| P["409, nothing saved<br/>validate and review again"]
     P --> G
     O --> Q["One transaction:<br/>inserts · updates · audit entries<br/>status: Committed"]
@@ -263,11 +280,13 @@ flowchart LR
     C["recover-import-jobs<br/>every minute and at startup"] -->|"never queued, or quiet for 5 minutes"| E
 ```
 
-Two recurring jobs run alongside the import jobs:
+Three recurring jobs run alongside the import jobs:
 
 - `recover-import-jobs` runs every minute and at startup. It queues unfinished work that was never
   queued or hasn't updated for 5 minutes.
 - `delete-expired-guest-workspaces` runs hourly and removes expired guest data.
+- `delete-expired-import-files` runs hourly, and at startup when enabled. It's off by default. When
+  turned on, it removes raw files from committed member batches after a set number of days.
 
 ## AI search pipeline
 
@@ -278,7 +297,7 @@ search runs those filters. Without an API key, the app still runs and suggests t
 flowchart LR
     A["POST /api/customers/search/ai<br/>question"] --> B{"Guest?"}
     B -->|"yes"| C["Reserve 1 of 5 searches<br/>or return 429"]
-    B -->|"no"| D["OpenAiFilterClient"]
+    B -->|"no"| D["Reserve 1 call in the shared daily cap<br/>or return 429"]
     C --> D
     D -->|"question and JSON schema<br/>store: false"| E["OpenAI Responses API"]
     E --> F["CustomerAiFilterParser<br/>checks fields, types, lengths, status"]
@@ -292,6 +311,10 @@ The client sends only the question and the filter schema. Customer records are n
 someone types in the question is. The default model is `gpt-6-astra`, set with `OPENAI_MODEL`. A failed
 request returns `503`, and the system prompt tells the model to treat the question as data and ignore
 instructions inside it.
+
+`OPENAI_MAX_CALLS_PER_DAY` caps paid calls per UTC day across all workspaces, and defaults to 1000. The
+count is in the database, so it holds across concurrent requests and restarts. A request stopped by the
+cap doesn't use up a guest's own 5 searches.
 
 ## Guest workspace
 
@@ -372,6 +395,13 @@ Only mechanisms present in the code are listed here.
 - **Small network exposure.** Compose publishes the app on `127.0.0.1` only and doesn't publish SQL
   Server to the host. The app container runs as a non-root user, and the Hangfire dashboard isn't
   exposed.
+- **Least-privilege SQL in production.** `compose.production.yaml` runs the app with a login that can
+  only read and write rows, and migrations with a separate login. The app container doesn't get the
+  `sa` password.
+- **Trusted proxies only.** `X-Forwarded-For` and `X-Forwarded-Proto` are ignored unless they come from
+  a configured proxy address, so a client can't fake them.
+- **Patched dependencies.** `System.Security.Cryptography.Pkcs` is pinned to 10.0.14, and CI fails if
+  `dotnet list package --vulnerable` reports anything.
 
 ## Screenshots
 
@@ -389,12 +419,15 @@ The starting point for a guest: the sample import, customer and batch counts, an
 
 ### Import review
 
-Each row shows its match result and decision. A conflict lists current and incoming values before an
-update is approved.
+This is the heart of the app. Every row of the sample file, checked against existing customers: a **Conflict** with its current and incoming values, a **New** row selectable for bulk approval, a **Duplicate** that was rejected with a reason, and a row with a validation **issue** to correct. Nothing reaches the customer list until a person has decided on each one.
 
-| Light | Dark |
-|---|---|
-| <a href="docs/screenshots/import-review-light.png"><img src="docs/screenshots/import-review-light.png" alt="Import review in the light theme with an approved conflict showing its location change and a new row awaiting approval"></a> | <a href="docs/screenshots/import-review-dark.png"><img src="docs/screenshots/import-review-dark.png" alt="The same import review in the dark green night theme"></a> |
+<p align="center">
+  <a href="docs/screenshots/import-review-rows-dark.png">
+    <img src="docs/screenshots/import-review-rows-dark.png" alt="The Rows panel of the import review in the dark green night theme, showing an approved Conflict with its location change from Queens to Brooklyn, a New row with a selection box, a rejected Duplicate, and a row with an invalid email address" width="100%">
+  </a>
+</p>
+
+The same panel is available in the [light theme](docs/screenshots/import-review-rows-light.png).
 
 ### Customers
 
@@ -422,22 +455,35 @@ SQL Server, using synthetic data. Run them from the repo root with Python 3 and 
 | `checks/recovery.py` | 10 recovery scenarios; stops and restarts containers |
 | `checks/run_ai_eval.sh mock` | 30 AI questions in a throwaway stack with a fake OpenAI server |
 | `checks/guest_access.py` | Single-use entry, workspace isolation, and guest exit |
+| `checks/stale_approval.py` | Two accounts: approving a preview that another user has since corrected |
+| `checks/review_workflow.py` | Finishing with zero approved rows, bulk approval, and upload and mapping audit entries |
+| `checks/health_outage.py` | Readiness and liveness before, during, and after a SQL Server outage |
+| `checks/ai_cap.py` | The shared AI call cap under concurrent requests from several guest workspaces |
+| `checks/file_retention.py` | Raw file cleanup, off by default and with protected files |
+| `checks/review_browser.py` | The stale approval, bulk approval, and finish flows in Chromium, with two accounts |
 | `checks/theme_browser.py` | Night mode and the full guest flow in Chromium; rewrites the screenshots |
+| `checks/production_setup.py` | Restricted SQL logins, EF Core and Hangfire with them, and the HTTPS proxy |
+
+To run everything in throwaway stacks with their own secrets and the fake AI provider:
 
 ```bash
-python3 checks/import_10k.py
-python3 checks/recovery.py
-checks/run_ai_eval.sh mock
-python3 checks/guest_access.py
+python3 -m venv ~/databridge-browser
+~/databridge-browser/bin/pip install playwright pillow
+~/databridge-browser/bin/playwright install chromium
+
+PYTHON=~/databridge-browser/bin/python checks/run_regression.sh
+PYTHON=~/databridge-browser/bin/python checks/run_production_check.sh
 ```
 
-These add test data to the running stack, so use a separate project, such as
+To run only some of them, use `REGRESSION_CHECKS="guest_access stale_approval" checks/run_regression.sh`.
+Running a check on its own adds test data to the stack it targets, so use a separate project, such as
 `COMPOSE_PROJECT_NAME=databridge-verify`, and remove it afterwards with `docker compose down -v`.
 
 `theme_browser.py` needs Playwright, so its [setup and latest results](docs/README.md#commands) are on
 the screenshots page.
 
-**Live AI suite (pending, no key has been available):**
+**Live AI suite.** The latest recorded live result is a historical run on an earlier build, shown under
+[Measured results](#measured-results). To get a current result:
 
 ```bash
 OPENAI_API_KEY='<your-key>' checks/run_ai_eval.sh live
@@ -445,41 +491,55 @@ OPENAI_API_KEY='<your-key>' checks/run_ai_eval.sh live
 
 It makes 30 OpenAI calls, which cost money, and prints the model the API reported and the pass count.
 
-**Continuous integration.** This repository has no CI workflow, so these checks are run by hand and
-there is no status badge.
+**Continuous integration.** [`.github/workflows/ci.yml`](.github/workflows/ci.yml) builds with warnings
+as errors, fails on vulnerable packages, and runs both scripts above on pushes and pull requests. It only
+uses the fake AI provider, so it makes no paid calls and needs no secrets.
 
 ## Measured results
 
-Measured on 2026-11-05 in a GitHub Codespace (2 CPUs, 7 GB of memory) with SQL Server 2022 in Compose,
-from a clean copy of the files Git would track. These are one run on a shared machine, not a benchmark.
+Measured on 2026-11-06 in a GitHub Codespace (2 CPUs, 7 GB of memory) with SQL Server 2022 in an isolated Compose stack, using synthetic data. These are single runs on a shared machine, not benchmarks.
 
-**Startup from a fresh checkout:** 92 seconds including the image build. Order: SQL Server healthy,
-migrations applied (`migrate` exited 0 after about 5 seconds), then the app healthy.
+| Check | Result |
+|---|---|
+| `dotnet build` | 0 errors, 0 warnings |
+| `dotnet list package --vulnerable --include-transitive` | No vulnerable packages; `System.Security.Cryptography.Pkcs` resolves to 10.0.14 |
+| `guest_access.py` | 3 of 3 |
+| `stale_approval.py` | 4 of 4 |
+| `review_workflow.py` | 10 of 10 |
+| `health_outage.py` | 4 of 4: readiness 503 in 1.5 s during the outage, with liveness still 200 |
+| `ai_cap.py` | 5 of 5: exactly 12 of 20 concurrent requests from 4 guest workspaces reached the provider |
+| `file_retention.py` | 3 of 3 |
+| `import_10k.py` | 6 of 6 |
+| `recovery.py` | 10 of 10 |
+| `run_ai_eval.sh mock` | 30 of 30, against the fake provider |
+| `review_browser.py` | 9 of 9 |
+| `theme_browser.py` | 88 of 88 |
+| `run_production_check.sh` | 22 of 22: restricted logins and HTTPS proxy, with the stale approval and browser checks through the proxy |
 
 **10,000-row import through the API** (9,700 new, 100 exact duplicates, 100 conflicts, 100 invalid):
 
 | Stage | Seconds | Actual counts |
 |---|---:|---|
-| Upload accepted (202) | 0.14 | Batch created |
-| Parse and stage (job) | 9.22 | **10,000 staged**, 0 duplicate source rows |
-| Save mapping | 2.57 | 10,000 drafts filled |
-| Validate (job) | 8.06 | **10,000 validated:** 9,700 new, 100 duplicates, 100 conflicts, 100 with issues |
-| Read review preview | 3.54 | 10,000 rows read over 100 pages |
-| Review all rows | 127.09 | 10,000 requests: 9,800 approved, 200 rejected |
-| Commit | 8.83 | **9,700 inserted, 100 updated**, 200 rejected |
-| **Total** | **159.45** | Customers 202 to 9,902; 19,802 audit entries |
+| Upload accepted (202) | 0.64 | Batch created |
+| Parse and stage (job) | 10.64 | **10,000 staged**, 0 duplicate source rows |
+| Save mapping | 5.30 | 10,000 drafts filled |
+| Validate (job) | 9.20 | **10,000 validated:** 9,700 new, 100 duplicates, 100 conflicts, 100 with issues |
+| Read review preview | 5.02 | 10,000 rows read over 100 pages |
+| Review all rows | 136.99 | 10,000 requests: 9,800 approved, 200 rejected |
+| Commit | 9.49 | **9,700 inserted, 100 updated**, 200 rejected |
+| **Total** | **177.28** | Customers 200 to 9,900; 19,804 audit entries |
 
-All 100 updated customers kept their existing note when the incoming cell was blank.
+All 100 updated customers kept their existing note when the incoming cell was blank. The total is about 11% slower than the earlier 159.45-second run, on the same shared machine with another stack running. The cause hasn't been isolated, but this build also adds row versions and audit entries.
 
 **Recovery scenarios: 10 of 10 passed**
 
 | # | Scenario | Result |
 |---|---|---|
-| 1 | CSV job killed | Killed at 4,500 of 30,000 rows; finished 71 s after restart with 30,000 rows, 0 duplicates |
-| 2 | Excel job killed | Killed at 3,500 of 30,000 rows; finished 70 s after restart with 30,000 rows, 0 duplicates |
+| 1 | CSV job killed | Killed at 3,500 of 30,000 rows; finished 71 s after restart with 30,000 rows, 0 duplicates |
+| 2 | Excel job killed | Killed at 4,000 of 30,000 rows; finished 67 s after restart with 30,000 rows, 0 duplicates |
 | 3 | Saved work that wasn't queued | No Hangfire job while the app was down; recovery queued it, and it finished with 50 rows |
 | 4 | Duplicate job delivery | Second delivery during the job, then a replay: 20,000 rows, 0 duplicates |
-| 5 | Temporary database failure | SQL Server killed at 4,000 of 30,000 rows for 15 s; the job failed once and was retried; 30,000 rows, 0 duplicates |
+| 5 | Temporary database failure | SQL Server killed at 3,500 of 30,000 rows for 15 s; the job failed once and was retried; 30,000 rows, 0 duplicates |
 | 6 | Permanently invalid file | Failed with a clear error, 0 retries, 0 rows; mapping returns 409 |
 | 7 | Newer mapping during validation | Old results discarded; drafts use the new mapping |
 | 8 | Commit rollback | Forced failure: 500, no customers or audit entries saved; the retry committed 20 |
@@ -490,18 +550,13 @@ All 100 updated customers kept their existing note when the incoming cell was bl
 
 | Suite | Model | Result |
 |---|---|---|
-| Mocked | `mock-model` (fake server) | **30 of 30** |
-| Live | Not run | **Pending:** no OpenAI key has been available |
+| Mocked, current build | `mock-model` (fake server) | **30 of 30** in 2.8 s |
+| Live, historical | `gpt-6-astra` | **30 of 30** in 55.9 s, on an earlier build |
+| Live, current build | Not run | No current result |
 
-The mocked suite returns the expected answer for each question, so it proves the app's request,
-validation, query, and results, not a model's judgment. With its answers deliberately broken, the same
-suite failed all 18 searches, which confirms it can detect wrong results.
+The mocked suite returns the expected answer for each question, so it proves the app's request, validation, query, and results, not a model's judgment. With its answers deliberately broken, an earlier run of the same suite failed all 18 searches, which confirms it can detect wrong results. The historical live run was on an earlier build and hasn't been repeated, so it doesn't describe this commit.
 
-**Browser test against the Compose stack:** sign-in, Excel upload, mapping, validation, approval and
-rejection, commit, the saved customer on `/customers`, and sign-out all passed, with no browser errors.
-
-**Night mode and guest flow, 2026-11-06:** `checks/theme_browser.py` passed 87 of 87 checks in Chromium.
-See the [full results](docs/README.md#test-results).
+**Startup from a fresh checkout**, measured on 2026-11-05: 92 seconds including the image build.
 
 ## API reference
 
@@ -510,7 +565,8 @@ Examples are in [`DataBridge.http`](DataBridge.http). Writes need the antiforger
 
 | Method | Path | Roles | Description |
 |---|---|---|---|
-| `GET` | `/api/health` | none | Returns `{"status":"Healthy"}` |
+| `GET` | `/api/health/live` | none | `200` while the app process can answer. Doesn't touch SQL Server |
+| `GET` | `/api/health/ready` | none | `200` when SQL Server answers, otherwise `503` |
 | `GET` | `/api/account/antiforgery` | none | Issues an antiforgery token for API clients |
 | `POST` | `/account/login` | none | Form sign-in; redirects |
 | `POST` | `/account/logout` | signed in | Signs out and ends other copies of the session cookie |
@@ -525,8 +581,9 @@ Examples are in [`DataBridge.http`](DataBridge.http). Writes need the antiforger
 | `PUT` | `/api/imports/{batchId}/mapping` | Admin, Guest | Saves the column mapping and fills drafts |
 | `POST` | `/api/imports/{batchId}/validate` | Admin, Reviewer, Guest | Queues validation; returns `202` |
 | `PUT` | `/api/imports/{batchId}/rows/{rowId}` | Admin, Reviewer, Guest | Corrects a row and revalidates the batch |
-| `PUT` | `/api/imports/{batchId}/rows/{rowId}/decision` | Admin, Reviewer, Guest | Approves or rejects a row |
-| `POST` | `/api/imports/{batchId}/commit` | Admin, Guest | Commits approved rows; repeating returns the same summary |
+| `PUT` | `/api/imports/{batchId}/rows/{rowId}/decision` | Admin, Reviewer, Guest | Approves or rejects a row. Approving requires the preview's `rowVersion` |
+| `POST` | `/api/imports/{batchId}/rows/bulk-approve` | Admin, Reviewer, Guest | Approves selected New rows, or none if any has a problem |
+| `POST` | `/api/imports/{batchId}/commit` | Admin, Guest | Finishes the batch, even with zero approved rows; repeating returns the same summary |
 | `GET` | `/api/imports/{batchId}/audit` | Admin, Reviewer, Guest | Paged audit history |
 
 Import errors use these status codes: `400` invalid request, `404` not found or in another workspace,
@@ -560,7 +617,7 @@ docker compose down -v             # stop and DELETE this stack's data
 |---|---|---|---|
 | `sqlserver` | `mcr.microsoft.com/mssql/server:2022-latest` | Not published | Database, limited to 2 GB of memory, with data in the `sql-data` volume |
 | `migrate` | `databridge-app:local` | None | Applies the EF Core migrations, then exits |
-| `app` | `databridge-app:local` | `127.0.0.1:8088` | The application, health-checked through `/api/health` |
+| `app` | `databridge-app:local` | `127.0.0.1:8088` | The application, health-checked through `/api/health/ready` |
 
 This stack has its own volumes, `databridge_sql-data` and `databridge_data-protection-keys`. It doesn't
 touch the `databridge-sql` dev container or its `databridge-sql-data` volume, and it doesn't publish SQL
@@ -598,6 +655,10 @@ docker compose restart app
 
 To use another model, set `OPENAI_MODEL` when running `docker compose up`.
 
+### Production setup
+
+[`compose.production.yaml`](compose.production.yaml) adds restricted SQL logins, a separate migration login, and an HTTPS reverse proxy. The [production guide](docs/production.md) covers setup, HTTPS, and trusted proxy configuration.
+
 ## Local development
 
 `dotnet run` uses the `databridge-sql` dev container and .NET user secrets:
@@ -621,6 +682,9 @@ Compose variables, read from the shell or a `.env` file:
 | `DATABRIDGE_PORT` | `8088` | Host port on `127.0.0.1` |
 | `DATABRIDGE_SECRETS_DIR` | `./secrets` | Folder holding the secret files |
 | `OPENAI_MODEL` | `gpt-6-astra` | Model for AI search |
+| `OPENAI_MAX_CALLS_PER_DAY` | `1000` | Shared daily cap on paid AI calls. `0` turns AI calls off |
+| `IMPORT_RAW_FILE_RETENTION_ENABLED` | `false` | Turns on cleanup of raw files from committed member imports |
+| `IMPORT_RAW_FILE_RETENTION_DAYS` | `90` | Days to keep those files once cleanup is on |
 | `COMPOSE_PROJECT_NAME` | `databridge` | Separate project name for running the checks |
 
 App settings. In Compose, use double underscores, either as an environment variable or as a file in
@@ -639,7 +703,11 @@ App settings. In Compose, use double underscores, either as an environment varia
 | `OpenAI__BaseUrl` | yes | Defaults to `https://api.openai.com/v1/` |
 | `OpenAI__TimeoutSeconds` | no | Defaults to `20` |
 | `Import__MaxUploadBytes` | no | Defaults to `5242880` (5 MiB). Guests are limited to 1 MiB regardless |
+| `OpenAI__MaxCallsPerDay` | no | Shared daily cap on paid AI calls. Defaults to `1000` |
+| `Import__RawFileRetention__Enabled`, `__Days` | no | Raw file cleanup. Defaults to `false` and `90` |
 | `Hangfire__WorkerEnabled` | no | Runs background jobs in this process. Defaults to `true` |
+| `Hangfire__PrepareSchema` | no | Lets the app install the Hangfire schema. Defaults to `true`; production sets `false` |
+| `ForwardedHeaders__KnownProxies__N` | no | Proxy addresses allowed to set `X-Forwarded-*`. Empty ignores those headers |
 
 ## Project structure
 
@@ -663,16 +731,21 @@ DataBridge/
 │   ├── ImportService.cs         Upload, parsing, validation, review, commit, and audit
 │   ├── ImportJobQueue.cs        Queueing and recovery of import jobs
 │   ├── ImportJobRunner.cs       Hangfire job, batch lock, and retries
+│   ├── ImportFileRetentionService.cs  Opt-in raw file cleanup
+│   ├── AiUsageCap.cs            Shared daily cap on paid AI calls
 │   ├── GuestWorkspaceService.cs Guest tokens, sessions, quotas, and cleanup
 │   ├── CustomerService.cs       Customer search
 │   ├── CustomerAiSearchService.cs, CustomerAiFilterParser.cs, OpenAiFilterClient.cs
 │   └── DataBridgeApiClient.cs   HTTP client the Blazor pages use
-├── checks/                      API, recovery, AI, guest, and browser checks
-├── docs/                        Logo, screenshots, and night mode test results
-├── scripts/setup-secrets.sh     Creates the local secrets folder
+├── .github/workflows/ci.yml     Build, package audit, and regression checks
+├── checks/                      API, recovery, AI, guest, production, and browser checks
+├── deploy/Caddyfile             HTTPS reverse proxy for the production setup
+├── docs/                        Logo, badges, screenshots, test results, and production guide
+├── scripts/                     Secrets setup and production SQL logins
 ├── wwwroot/                     app.css, theme.js, guest-entry.js, sample-customers.csv
 ├── compose.yaml                 SQL Server, migrations, and app
 ├── compose.mock.yaml            Adds the fake OpenAI server for the AI checks
+├── compose.production.yaml      Restricted SQL logins and the HTTPS proxy
 ├── Dockerfile                   Multi-stage build of the app image
 ├── DataBridge.http              Example API requests
 └── Program.cs                   Service setup and the HTTP pipeline
@@ -680,45 +753,31 @@ DataBridge/
 
 ## Known limitations
 
-- **Local deployment only.** Compose serves plain HTTP on `127.0.0.1`. There is no production deployment
-  configuration, so a public deployment would need TLS and a reverse proxy added first.
-- **The live AI suite hasn't run.** AI search has only been verified against a fake OpenAI server, which
-  proves the app's handling but not a real model's judgment.
-- **No .NET unit tests or CI.** The checks are end-to-end scripts that are run by hand.
-- **Files are read into memory and stored in the database.** Uploads are copied into memory and kept as
-  binary data in SQL Server after the commit. That's part of why uploads have a 5 MiB default limit.
-- **Reviewing is one row at a time.** There's no bulk approval in the UI or API. In the 10,000-row test,
-  review was 127 of the 159 seconds.
-- **Matching is by email only.** A customer whose email changed is treated as new, and two customers
-  can't share an email within a workspace.
-- **No customer editing outside imports.** Customers are created and updated only by committing a batch.
-  The API has no endpoint to edit or delete one directly, or to delete a batch.
-- **No account management screens.** Members are created from seed settings. There's no registration,
-  password reset, or role management in the app.
-- **Manual filters are limited.** The directory's manual filters cover location and status only. Company
-  and name are reachable only through AI search.
-- **Sign-in has no IP rate limit.** Account lockout protects individual accounts, and the rate limiter
-  only covers guest entry.
+- **No live deployment.** The production overlay has been tested locally with Caddy's local certificate. Issuing a real certificate for a public domain and running behind another proxy haven't been tested. See the [production guide](docs/production.md).
+- **The live AI suite hasn't run on the current build.** The latest live result is the historical run under [Measured results](#measured-results).
+- **No .NET unit tests.** The checks are end-to-end scripts.
+- **Files are read into memory and stored in the database.** Uploads are copied into memory and kept as binary data in SQL Server. That's part of why uploads have a 5 MiB default limit. Cleanup of raw files after a commit is available but off by default.
+- **Bulk approval covers one page of the UI at a time.** The API accepts up to 500 rows per request, and each conflict still needs its own review.
+- **A correction doesn't check the row version.** Approvals do, but if two people correct the same row at once, the later correction replaces the earlier one. Both are in the audit history.
+- **Matching is by email only.** A customer whose email changed is treated as new, and two customers can't share an email within a workspace.
+- **No customer editing outside imports.** Customers are created and updated only by committing a batch. The API has no endpoint to edit or delete one directly, or to delete a batch.
+- **No account management screens.** Members are created from seed settings. There's no registration, password reset, or role management in the app.
+- **Manual filters are limited.** The directory's manual filters cover location and status only. Company and name are reachable only through AI search.
+- **Sign-in has no IP rate limit.** Account lockout protects individual accounts, and the rate limiter only covers guest entry.
+- **A server error on a `PUT` returns `405`, not `500`.** The error handler re-runs `/Error`, which doesn't accept `PUT`. Nothing is saved, but the status code is misleading.
 - **Night mode was tested in Chromium only.** Firefox, Safari, and physical phones weren't tested.
-- **Dependency advisories.** `dotnet build` reports 4 warnings, which are 2 advisories repeated, for
-  `System.Security.Cryptography.Pkcs` 9.0.11. It comes through EF Core's SQL Server package
-  (`Microsoft.Data.SqlClient`). Adding version 10.0.14 directly cleared both advisories in a scratch
-  copy, but that change hasn't been made here.
-  - High: <https://github.com/advisories/GHSA-846f-f764-76mx>
-  - Moderate: <https://github.com/advisories/GHSA-2fmv-rv2c-59x7>
 
 ## Future improvements
 
-- Clear the two dependency advisories by referencing the patched package directly.
-- Run the live AI suite with a real key and publish the result.
-- Add a CI workflow for the build and the Compose-based checks, and a status badge once it runs.
+- Run the live AI suite on the current build and publish the result.
 - Add a .NET unit test project for validation, matching, and the AI filter parser.
-- Add bulk review actions, such as approving all new rows.
-- Remove stored upload files after a commit, or move them to object storage.
+- Check the row version on corrections as well as approvals.
+- Return `500` for unhandled errors on `PUT` requests.
+- Move stored upload files to object storage.
 - Add company and name to the manual customer filters.
 - Add an IP rate limit to sign-in.
 - Add customer editing, password reset, and user management screens.
-- Add a production deployment configuration with TLS.
+- Test the production setup with a real domain.
 - Run the browser check in Firefox and WebKit.
 
 ## Authors

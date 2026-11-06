@@ -1,0 +1,6 @@
+# The public entry point for compose.production.yaml. For a real domain, Caddy gets a
+# certificate automatically. For localhost, it uses its own local test certificate.
+# It replaces any X-Forwarded-* headers that a client sends.
+{$DATABRIDGE_DOMAIN:localhost} {
+	reverse_proxy app:8080
+}

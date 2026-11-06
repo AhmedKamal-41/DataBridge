@@ -38,7 +38,13 @@ Scrolled to the rows, with both themes at the same scroll position (862 px).
 |---|---|
 | ![Import review, light](screenshots/import-review-light.png) | ![Import review, dark](screenshots/import-review-dark.png) |
 
-The full page shows every status together: Conflict, New, Duplicate, an issue, Approved, and Rejected. The sidebar stops partway down because it's sticky and one screen tall, so this only appears in a full-page capture.
+The Rows panel alone shows every status together: Conflict, New, Duplicate, an issue, Approved, and Rejected. The root README uses the dark version as its highlight.
+
+| Light | Dark |
+|---|---|
+| ![Import review rows, light](screenshots/import-review-rows-light.png) | ![Import review rows, dark](screenshots/import-review-rows-dark.png) |
+
+The full page also includes mapping, commit, and audit history. The sidebar stops partway down because it's sticky and one screen tall, so this only appears in a full-page capture.
 
 | Light | Dark |
 |---|---|
@@ -66,28 +72,22 @@ python3 -m venv ~/databridge-browser        # Outside the repo, so Git and Docke
 ~/databridge-browser/bin/python checks/theme_browser.py    # Runs the checks and rewrites docs/screenshots/
 ```
 
-`checks/guest_access.py` needs an admin account, so it ran in a throwaway stack with its own secrets folder, which was then deleted:
+The other checks run in throwaway stacks, with their own secrets, through the regression script:
 
 ```bash
-export DATABRIDGE_SECRETS_DIR=<temporary folder> DATABRIDGE_PORT=8089 COMPOSE_PROJECT_NAME=databridge-verify
-./scripts/setup-secrets.sh
-# Write Seed__Users__0__Email, Seed__Users__0__Role (Admin), and Seed__Users__0__Password to $DATABRIDGE_SECRETS_DIR/app
-docker compose up -d --wait
-python3 checks/guest_access.py
-docker compose down -v
+PYTHON=~/databridge-browser/bin/python checks/run_regression.sh
 ```
 
 ## Test results
 
-Run on 2026-11-06 in a GitHub Codespace with Chromium 156.0.8078.4, Playwright 1.64.1, and Pillow 13.0.0.
+Run on 2026-11-06 in a GitHub Codespace with Chromium 156.0.8078.4, Playwright 1.64.1, and Pillow 13.0.0. The root README's [Measured results](../README.md#measured-results) has the other regression checks.
 
 | Check | Result |
 |---|---|
-| `checks/theme_browser.py` | **87 of 87 passed**, exit code 0 |
+| `checks/theme_browser.py` | **88 of 88 passed**, exit code 0 |
+| `checks/review_browser.py` | **9 of 9 passed**, exit code 0 |
 | `checks/guest_access.py` | **3 of 3 passed**, exit code 0 |
-| `dotnet build` | 0 errors, and the 4 known dependency warnings in the root README |
-
-`guest_access.py` and `dotnet build` ran just before the last CSS-only fixes. `theme_browser.py` ran on the final build.
+| `dotnet build` | 0 errors, 0 warnings |
 
 What `theme_browser.py` covers:
 
@@ -122,7 +122,7 @@ A pixel comparison with the previous build at 1280 px showed the light theme cha
 ## Not covered
 
 - Only Chromium was tested. Firefox and Safari weren't, and mobile is Chromium's device emulation rather than a physical phone.
-- The member sign-in was checked as a page but not signed in to, because this stack has no admin account. Members use the same layouts.
-- AI search wasn't run. Its error and info messages were only checked through the contrast fixture.
+- `theme_browser.py` doesn't sign in as a member. `review_browser.py` does, but only in the light theme by default.
+- AI search wasn't run in the browser. Its error and info messages were only checked through the contrast fixture.
 - The error bar and reconnect dialog were checked by their computed colours, not by forcing a real failure.
 - Tailwind isn't configured in this checkout, so there were no dark variants to connect.

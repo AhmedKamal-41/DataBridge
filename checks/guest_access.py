@@ -4,7 +4,7 @@ from copy import copy
 from pathlib import Path
 from urllib.parse import urlencode
 
-from support import Client, signed_in_admin, wait_until_healthy
+from support import Client, approval, signed_in_admin, wait_until_healthy
 
 
 SAMPLE = Path(__file__).resolve().parents[1] / "wwwroot" / "sample-customers.csv"
@@ -74,11 +74,10 @@ def run():
     for row in rows:
         decision = {"decision": "Rejected", "reason": "Guest isolation check"}
         if row["matchResult"] == "New":
-            decision = {"decision": "Approved"}
+            decision = approval(row)
         if row["matchResult"] == "Conflict":
             assert row["matchedCustomerId"] in guest_ids
-            decision = {"decision": "Approved", "confirmUpdate": True,
-                        "customerVersion": row["matchedCustomerVersion"]}
+            decision = approval(row)
         status, body = guest.put(f"{batch_url}/rows/{row['id']}/decision", decision)
         assert status == 200, (status, body)
 

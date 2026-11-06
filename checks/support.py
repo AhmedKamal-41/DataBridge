@@ -1,9 +1,12 @@
 """Shared helpers for the DataBridge checks. Python standard library only."""
 import urllib.parse
-import http.cookiejar, io, json, os, subprocess, time, urllib.error, urllib.request, uuid, zipfile
+import http.cookiejar, io, json, os, ssl, subprocess, time, urllib.error, urllib.request, uuid, zipfile
 
-BASE_URL = f"http://localhost:{os.environ.get('DATABRIDGE_PORT', '8088')}"
+BASE_URL = os.environ.get("DATABRIDGE_BASE_URL") or f"http://localhost:{os.environ.get('DATABRIDGE_PORT', '8088')}"
 SECRETS_DIR = os.environ.get("DATABRIDGE_SECRETS_DIR", "./secrets")
+# Only for the local production check, where Caddy serves its own test certificate.
+INSECURE_TLS = os.environ.get("DATABRIDGE_INSECURE_TLS") == "1"
+TLS_CONTEXT = ssl._create_unverified_context() if INSECURE_TLS else None
 
 
 def read_secret(name):
@@ -34,7 +37,8 @@ class Client:
 
     def __init__(self):
         self.jar = http.cookiejar.CookieJar()
-        self.opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(self.jar), NoRedirect())
+        self.opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(self.jar), NoRedirect(),
+                                                  urllib.request.HTTPSHandler(context=TLS_CONTEXT))
         self.token = None
 
     def sign_in(self, email, password):
@@ -128,11 +132,64 @@ def signed_in_admin():
     return client
 
 
+def signed_in_reviewer():
+    client = Client()
+    client.sign_in(read_secret("Seed__Users__1__Email"), read_secret("Seed__Users__1__Password"))
+    return client
+
+
+def new_guest():
+    """A signed-in guest with its own workspace. Uses 2 of the 16 guest entries per 5 minutes."""
+    client = Client()
+    client.refresh_token()
+    status, body = client.send("POST", "/account/guest-token")
+    assert status == 200, status
+    status, _ = client.send("POST", "/account/guest", urllib.parse.urlencode({"token": body["token"]}).encode(),
+                            "application/x-www-form-urlencoded")
+    assert status == 302, status
+    client.refresh_token()
+    return client
+
+
+def approval(row, **extra):
+    """The decision request for approving a row as shown in this preview."""
+    request = {"decision": "Approved", "rowVersion": row["rowVersion"], **extra}
+    if row["matchResult"] == "Conflict":
+        request.update(confirmUpdate=True, customerVersion=row["matchedCustomerVersion"])
+    return request
+
+
+def audit_entries(client, batch_id):
+    items, page = [], 1
+    while True:
+        status, body = client.get(f"/api/imports/{batch_id}/audit?page={page}&pageSize=100")
+        assert status == 200, status
+        items += body["items"]
+        if page >= body["totalPages"]:
+            return items
+        page += 1
+
+
+def ready_batch(client, content, file_name, mapping):
+    """Uploads a file, saves its mapping, and validates it."""
+    batch_id = client.upload(file_name, content)
+    batch = client.wait_for_job(batch_id, timeout=120)
+    assert batch["job"]["stage"] == "Completed", batch["job"]
+    status, reply = client.put(f"/api/imports/{batch_id}/mapping", mapping)
+    assert status == 200, (status, reply)
+    status, reply = client.post(f"/api/imports/{batch_id}/validate")
+    assert status == 202, (status, reply)
+    batch = client.wait_for_job(batch_id, timeout=120)
+    assert batch["status"] == "ReadyForReview", batch
+    return batch_id
+
+
 def wait_until_healthy(timeout=180):
+    """Waits for readiness, which includes SQL Server."""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         try:
-            with urllib.request.urlopen(BASE_URL + "/api/health", timeout=3) as response:
+            with urllib.request.urlopen(BASE_URL + "/api/health/ready", timeout=5, context=TLS_CONTEXT) as response:
                 if response.status == 200:
                     return
         except (urllib.error.URLError, ConnectionError, TimeoutError):

@@ -53,6 +53,11 @@ public class DataBridgeApiClient
         return SendAsync<PagedResponse<ImportRowDto>>(HttpMethod.Get, $"api/imports/{batchId}/rows?page={page}&pageSize={pageSize}");
     }
 
+    public Task<BulkApproveRowsResultDto> BulkApproveAsync(int batchId, BulkApproveRowsRequest request)
+    {
+        return SendAsync<BulkApproveRowsResultDto>(HttpMethod.Post, $"api/imports/{batchId}/rows/bulk-approve", JsonContent.Create(request));
+    }
+
     public Task<ImportRowDto> CorrectRowAsync(int batchId, int rowId, CorrectImportRowRequest request)
     {
         return SendAsync<ImportRowDto>(HttpMethod.Put, $"api/imports/{batchId}/rows/{rowId}", JsonContent.Create(request));

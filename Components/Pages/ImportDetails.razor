@@ -156,9 +156,20 @@ else
                 <p class="muted">Map the columns to fill in the draft values.</p>
             }
 
+            @if (batch.Status == StatusReadyForReview && rows.Items.Any(ImportRowCard.IsBulkApprovable))
+            {
+                <div class="bulk-actions" data-testid="bulk-actions">
+                    <button type="button" class="secondary" disabled="@isBusy" @onclick="SelectAllNewRows">Select all new rows on this page</button>
+                    <button type="button" disabled="@(isBusy || selectedRows.Count == 0)" @onclick="BulkApproveAsync">Approve selected (@selectedRows.Count)</button>
+                    <span class="muted">Conflicts are approved one at a time.</span>
+                </div>
+            }
+
             @foreach (ImportRowDto row in rows.Items)
             {
                 <ImportRowCard @key="row.Id"
+                               IsSelected="selectedRows.ContainsKey(row.Id)"
+                               OnSelectionChanged="selected => SetRowSelected(row, selected)"
                                Row="row"
                                BatchId="BatchId"
                                Headers="batch.Headers"
@@ -174,7 +185,7 @@ else
     {
         <section class="panel">
             <h2>Commit</h2>
-            <p class="muted">Every row needs a decision. Committing saves the approved rows to Customers.</p>
+            <p class="muted">Every row needs a decision. Committing saves the approved rows to Customers. If every row was rejected, it finishes the batch with no customer changes.</p>
             @if (canManage)
             {
                 <button type="button" disabled="@isBusy" @onclick="CommitAsync">Commit batch</button>
@@ -244,6 +255,9 @@ else
     private PagedResponse<ImportRowDto>? rows;
     private PagedResponse<ImportAuditEntryDto>? audit;
     private List<MappingField> mappingFields = new List<MappingField>();
+
+    // Row ID and the version the reviewer selected. Bulk approval sends that version.
+    private readonly Dictionary<int, byte[]> selectedRows = new Dictionary<int, byte[]>();
     private int rowsPage = 1;
     private int auditPage = 1;
     private bool canManage;
@@ -401,11 +415,59 @@ else
         try
         {
             rows = await ApiClient.GetRowsAsync(BatchId, rowsPage, RowsPageSize);
+            KeepCurrentSelections();
         }
         catch (ApiException exception)
         {
             rowsError = exception.Message;
         }
+    }
+
+    // A selection only applies to the values it was made for, and to this page.
+    private void KeepCurrentSelections()
+    {
+        foreach (int rowId in selectedRows.Keys.ToList())
+        {
+            ImportRowDto? row = rows?.Items.FirstOrDefault(item => item.Id == rowId);
+            if (row == null || !ImportRowCard.IsBulkApprovable(row) || !row.RowVersion.SequenceEqual(selectedRows[rowId]))
+            {
+                selectedRows.Remove(rowId);
+            }
+        }
+    }
+
+    private void SetRowSelected(ImportRowDto row, bool selected)
+    {
+        if (selected)
+        {
+            selectedRows[row.Id] = row.RowVersion;
+        }
+        else
+        {
+            selectedRows.Remove(row.Id);
+        }
+    }
+
+    private void SelectAllNewRows()
+    {
+        foreach (ImportRowDto row in rows!.Items.Where(ImportRowCard.IsBulkApprovable))
+        {
+            selectedRows[row.Id] = row.RowVersion;
+        }
+    }
+
+    private async Task BulkApproveAsync()
+    {
+        var request = new BulkApproveRowsRequest
+        {
+            Rows = selectedRows.Select(selection => new BulkApproveRowItem { RowId = selection.Key, RowVersion = selection.Value }).ToList()
+        };
+        int count = request.Rows.Count;
+
+        // Cleared either way. After a failure the reviewer selects again from the current values.
+        selectedRows.Clear();
+
+        await RunActionAsync(() => ApiClient.BulkApproveAsync(BatchId, request), $"{count} new row(s) were approved.");
     }
 
     private async Task LoadAuditAsync(int page)

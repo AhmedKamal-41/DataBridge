@@ -4,7 +4,8 @@ public enum AiSearchErrorType
 {
     NotConfigured,
     RequestFailed,
-    InvalidOutput
+    InvalidOutput,
+    CapReached
 }
 
 public class AiSearchException : Exception

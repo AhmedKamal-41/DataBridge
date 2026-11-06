@@ -28,7 +28,7 @@ public class ImportService : IImportService, IImportJobWork
     private const long MaxUnpackedWorkbookBytes = 200 * 1024 * 1024;
     private const int MinPhoneDigits = 7;
     private const int MaxPhoneDigits = 15;
-    private const string SystemActor = "system";
+    public const string SystemActor = "system";
 
     private readonly DataBridgeDbContext _db;
     private readonly long _maxUploadBytes;
@@ -41,7 +41,7 @@ public class ImportService : IImportService, IImportJobWork
         _maxUploadBytes = configuration.GetValue("Import:MaxUploadBytes", DefaultMaxUploadBytes);
     }
 
-    public async Task<ImportBatchDto> UploadAsync(string fileName, Stream fileStream)
+    public async Task<ImportBatchDto> UploadAsync(string fileName, Stream fileStream, string actorId)
     {
         string extension = Path.GetExtension(fileName).ToLowerInvariant();
 
@@ -98,8 +98,16 @@ public class ImportService : IImportService, IImportJobWork
             }
         }
 
-        // Save the file, batch and job before queueing. Guests reserve quota in the same transaction.
+        // Save the file, batch, job and audit entry before queueing. Guests reserve quota in the same transaction.
         _db.ImportBatches.Add(batch);
+        _db.ImportAuditEntries.Add(new ImportAuditEntry
+        {
+            Action = "FileUploaded",
+            Actor = actorId,
+            TimestampUtc = now,
+            Batch = batch,
+            Details = JsonSerializer.Serialize(new { bytes = fileCopy.Length })
+        });
         await _db.SaveChangesAsync();
         if (guestTransaction != null)
         {
@@ -217,7 +225,7 @@ public class ImportService : IImportService, IImportJobWork
         };
     }
 
-    public async Task<ImportBatchDto?> SaveMappingAsync(int batchId, SaveColumnMappingRequest request)
+    public async Task<ImportBatchDto?> SaveMappingAsync(int batchId, SaveColumnMappingRequest request, string actorId)
     {
         ImportBatch? batch = await _db.ImportBatches
             .Include(b => b.Job)
@@ -280,6 +288,9 @@ public class ImportService : IImportService, IImportJobWork
             row.MatchResult = null;
             row.MatchedCustomerId = null;
         }
+
+        // Only column positions, so no customer data is copied into the audit trail.
+        AddAuditEntry("MappingSaved", actorId, batch.Id, null, null, batch.ColumnMappingJson);
 
         await SaveReviewChangesAsync(batch);
 
@@ -595,6 +606,20 @@ public class ImportService : IImportService, IImportJobWork
 
         Customer? customer = await FindCustomerForRowAsync(row);
 
+        if (request.Decision == nameof(ReviewDecision.Approved) && request.RowVersion == null)
+        {
+            throw new ImportException(ImportErrorType.Invalid,
+                "Send rowVersion from the row preview to approve a row.");
+        }
+
+        // Checked before anything changes, so a stale request leaves the decision and
+        // the audit history as they were.
+        if (request.RowVersion != null && !row.RowVersion.SequenceEqual(request.RowVersion))
+        {
+            throw new ImportException(ImportErrorType.Locked,
+                $"Source row {row.SourceRowNumber} changed after you viewed it. Review the current values and try again.");
+        }
+
         if (request.Decision == nameof(ReviewDecision.Approved))
         {
             ApproveRow(row, customer, request);
@@ -623,6 +648,105 @@ public class ImportService : IImportService, IImportJobWork
         await SaveReviewChangesAsync(batch);
 
         return ToRowDto(row, customer);
+    }
+
+    public async Task<BulkApproveRowsResultDto?> BulkApproveAsync(int batchId, BulkApproveRowsRequest request, string actorId)
+    {
+        ImportBatch? batch = await _db.ImportBatches
+            .Include(b => b.Job)
+            .FirstOrDefaultAsync(b => b.Id == batchId);
+
+        if (batch == null)
+        {
+            return null;
+        }
+
+        CheckBatchIsInReview(batch);
+
+        if (request.Rows.Select(item => item.RowId).Distinct().Count() != request.Rows.Count)
+        {
+            throw new ImportException(ImportErrorType.Invalid, "Select each row only once.");
+        }
+
+        List<int> rowIds = request.Rows.Select(item => item.RowId).ToList();
+
+        // The batch was found through the workspace filter, so a row from another
+        // workspace can't be found here. It's reported the same as an unknown row.
+        Dictionary<int, ImportRow> rowsById = await _db.ImportRows
+            .Include(row => row.Issues)
+            .Where(row => row.ImportBatchId == batchId && rowIds.Contains(row.Id))
+            .ToDictionaryAsync(row => row.Id);
+
+        Dictionary<string, Customer> customersByEmail =
+            await LoadCustomersByEmailAsync(rowsById.Values.ToList(), _db.Customers.AsNoTracking());
+
+        var problems = new List<string>();
+
+        foreach (BulkApproveRowItem item in request.Rows)
+        {
+            if (!rowsById.TryGetValue(item.RowId, out ImportRow? row))
+            {
+                problems.Add($"Row {item.RowId} isn't in this batch.");
+                continue;
+            }
+
+            string? problem = FindBulkApprovalProblem(row, item, customersByEmail);
+            if (problem != null)
+            {
+                problems.Add($"Source row {row.SourceRowNumber} {problem}");
+            }
+        }
+
+        if (problems.Count > 0)
+        {
+            throw new ImportException(ImportErrorType.Locked,
+                $"Nothing was approved. {string.Join(" ", problems)}");
+        }
+
+        foreach (BulkApproveRowItem item in request.Rows)
+        {
+            ImportRow row = rowsById[item.RowId];
+            ApproveRow(row, null, new SaveRowDecisionRequest { Decision = nameof(ReviewDecision.Approved) });
+            AddAuditEntry("InsertApproved", actorId, batch.Id, row.Id, null, null);
+        }
+
+        // One save, so every selected row and audit entry is saved, or none are. A row
+        // that changes after the check above fails its RowVersion check here.
+        await SaveReviewChangesAsync(batch);
+
+        return new BulkApproveRowsResultDto { ApprovedCount = request.Rows.Count };
+    }
+
+    // Conflicts aren't eligible: each one needs its own confirmation.
+    private static string? FindBulkApprovalProblem(
+        ImportRow row, BulkApproveRowItem item, Dictionary<string, Customer> customersByEmail)
+    {
+        if (!row.RowVersion.SequenceEqual(item.RowVersion!))
+        {
+            return "changed after you viewed it.";
+        }
+
+        if (row.Issues.Count > 0)
+        {
+            return "has validation issues.";
+        }
+
+        if (row.MatchResult != MatchResult.New)
+        {
+            return "isn't a new row, so it needs its own review.";
+        }
+
+        if (row.ReviewDecision != ReviewDecision.Pending)
+        {
+            return "already has a decision.";
+        }
+
+        if (FindMatchedCustomer(row, customersByEmail) != null)
+        {
+            return "now matches an existing customer. Validate the batch again.";
+        }
+
+        return null;
     }
 
     public async Task<ImportCommitSummaryDto?> CommitAsync(int batchId, string actorId)
@@ -666,12 +790,9 @@ public class ImportService : IImportService, IImportJobWork
                 $"Every row needs a decision. Source rows without one: {string.Join(", ", undecidedRows)}.");
         }
 
+        // This can be empty: a batch where every row was rejected still finishes,
+        // with a summary of zero inserts and zero updates.
         List<ImportRow> approvedRows = rows.Where(row => row.ReviewDecision == ReviewDecision.Approved).ToList();
-
-        if (approvedRows.Count == 0)
-        {
-            throw new ImportException(ImportErrorType.Invalid, "At least one row must be approved.");
-        }
 
         // These customers are tracked, so EF Core saves the changes made to them.
         Dictionary<string, Customer> customersByEmail = await LoadCustomersByEmailAsync(approvedRows, _db.Customers);
@@ -1659,7 +1780,8 @@ public class ImportService : IImportService, IImportJobWork
             MatchResult = row.MatchResult?.ToString(),
             MatchedCustomerId = row.MatchedCustomerId,
             ReviewDecision = row.ReviewDecision.ToString(),
-            DecisionReason = row.DecisionReason
+            DecisionReason = row.DecisionReason,
+            RowVersion = row.RowVersion
         };
 
         foreach (ImportIssue issue in row.Issues)

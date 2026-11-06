@@ -1,7 +1,7 @@
 """10 recovery scenarios against a running Compose stack, with synthetic data. Run from the
 repo root. It stops and restarts the app and SQL Server containers of that stack."""
 import subprocess, sys, threading, time, traceback, uuid
-from support import (compose, make_csv, make_xlsx, signed_in_admin, sql, sql_value, wait_until_healthy)
+from support import (approval, compose, make_csv, make_xlsx, signed_in_admin, sql, sql_value, wait_until_healthy)
 
 MAP3 = {"nameColumn": 0, "emailColumn": 1, "statusColumn": 2}
 results = []
@@ -201,10 +201,7 @@ def ready_for_review(client, content, name):
 
 def approve_all(client, batch_id):
     for row in client.rows(batch_id):
-        request = {"decision": "Approved"}
-        if row["matchResult"] == "Conflict":
-            request = {"decision": "Approved", "confirmUpdate": True, "customerVersion": row["matchedCustomerVersion"]}
-        status, reply = client.put(f"/api/imports/{batch_id}/rows/{row['id']}/decision", request)
+        status, reply = client.put(f"/api/imports/{batch_id}/rows/{row['id']}/decision", approval(row))
         assert status == 200, (status, reply)
 
 

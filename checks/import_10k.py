@@ -1,7 +1,7 @@
 """10,000-row import through the API, with synthetic data. Run from the repo root against a
 running Compose stack. Rows: 9,700 new, 100 exact duplicates, 100 conflicts, 100 invalid."""
 import json, sys, time, uuid
-from support import signed_in_admin, sql, sql_value
+from support import approval, signed_in_admin, sql, sql_value
 
 NEW, DUPLICATE, CONFLICT, INVALID = 9700, 100, 100, 100
 TOTAL = NEW + DUPLICATE + CONFLICT + INVALID
@@ -78,11 +78,8 @@ for row in rows:
     if row["issues"] or row["matchResult"] == "Duplicate":
         request = {"decision": "Rejected", "reason": "Synthetic review"}
         rejected += 1
-    elif row["matchResult"] == "Conflict":
-        request = {"decision": "Approved", "confirmUpdate": True, "customerVersion": row["matchedCustomerVersion"]}
-        approved += 1
     else:
-        request = {"decision": "Approved"}
+        request = approval(row)
         approved += 1
     status, reply = client.put(f"/api/imports/{batch_id}/rows/{row['id']}/decision", request)
     assert status == 200, (status, reply)

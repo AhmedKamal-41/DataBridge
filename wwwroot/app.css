@@ -319,6 +319,7 @@ th { color: var(--muted); background: var(--table-head-bg); font-size: .78rem; f
 .badge.warn { color: var(--warn-fg); background: var(--warn-bg); }
 .badge.bad { color: var(--error-fg); background: var(--error-bg); }
 .badge.duplicate { color: var(--duplicate-fg); background: var(--duplicate-bg); }
+.bulk-actions { display: flex; flex-wrap: wrap; align-items: center; gap: .6rem; margin-bottom: .85rem; }
 .row-card { margin-bottom: .85rem; padding: .8rem .9rem; border: 1px solid var(--line); border-radius: 10px; }
 .row-card-title { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; margin-bottom: .5rem; font-weight: 660; }
 .row-card h3 { margin: .7rem 0 .3rem; font-size: .92rem; }

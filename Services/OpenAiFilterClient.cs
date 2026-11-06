@@ -37,9 +37,11 @@ public class OpenAiFilterClient : IOpenAiFilterClient
     private readonly string? _apiKey;
     private readonly string _model;
     private readonly ILogger<OpenAiFilterClient> _logger;
+    private readonly IAiUsageCap _usageCap;
 
-    public OpenAiFilterClient(HttpClient httpClient, IConfiguration configuration, ILogger<OpenAiFilterClient> logger)
+    public OpenAiFilterClient(HttpClient httpClient, IConfiguration configuration, ILogger<OpenAiFilterClient> logger, IAiUsageCap usageCap)
     {
+        _usageCap = usageCap;
         _httpClient = httpClient;
         _apiKey = configuration["OpenAI:ApiKey"];
         _model = configuration["OpenAI:Model"] ?? throw new InvalidOperationException("Setting 'OpenAI:Model' is missing.");
@@ -52,6 +54,13 @@ public class OpenAiFilterClient : IOpenAiFilterClient
         {
             throw new AiSearchException(AiSearchErrorType.NotConfigured,
                 "AI search isn't set up on this server. Use the location and status filters instead.");
+        }
+
+        // The last step before the paid call. A failed call still counts, as it may be billed.
+        if (!await _usageCap.TryReserveCallAsync())
+        {
+            throw new AiSearchException(AiSearchErrorType.CapReached,
+                "AI search has reached its shared limit for today. Use the location and status filters instead.");
         }
 
         var body = new JsonObject

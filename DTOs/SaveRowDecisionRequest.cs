@@ -18,4 +18,8 @@ public class SaveRowDecisionRequest
     // Required when approving a Conflict: matchedCustomerVersion from the row
     // preview, which proves which version of the customer the reviewer saw.
     public byte[]? CustomerVersion { get; set; }
+
+    // The rowVersion from the row preview. Required to approve. If it's sent when
+    // rejecting, a row that has changed since the preview is refused as well.
+    public byte[]? RowVersion { get; set; }
 }

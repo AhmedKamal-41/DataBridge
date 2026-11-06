@@ -31,7 +31,7 @@ public class ImportsController : ControllerBase
         try
         {
             using Stream fileStream = request.File!.OpenReadStream();
-            ImportBatchDto batch = await _importService.UploadAsync(request.File.FileName, fileStream);
+            ImportBatchDto batch = await _importService.UploadAsync(request.File.FileName, fileStream, CurrentUserId);
 
             return AcceptedBatch(batch);
         }
@@ -85,7 +85,7 @@ public class ImportsController : ControllerBase
     {
         try
         {
-            ImportBatchDto? batch = await _importService.SaveMappingAsync(batchId, request);
+            ImportBatchDto? batch = await _importService.SaveMappingAsync(batchId, request, CurrentUserId);
             if (batch == null)
             {
                 return NotFound();
@@ -152,6 +152,26 @@ public class ImportsController : ControllerBase
             }
 
             return Ok(row);
+        }
+        catch (ImportException exception)
+        {
+            return ImportErrorResult(exception);
+        }
+    }
+
+    // POST /api/imports/5/rows/bulk-approve
+    [HttpPost("{batchId}/rows/bulk-approve")]
+    public async Task<IActionResult> BulkApprove(int batchId, BulkApproveRowsRequest request)
+    {
+        try
+        {
+            BulkApproveRowsResultDto? result = await _importService.BulkApproveAsync(batchId, request, CurrentUserId);
+            if (result == null)
+            {
+                return NotFound();
+            }
+
+            return Ok(result);
         }
         catch (ImportException exception)
         {

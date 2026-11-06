@@ -8,7 +8,7 @@ from pathlib import Path
 from PIL import Image
 from playwright.sync_api import sync_playwright
 
-BASE_URL = f"http://localhost:{os.environ.get('DATABRIDGE_PORT', '8088')}"
+BASE_URL = os.environ.get("DATABRIDGE_BASE_URL") or f"http://localhost:{os.environ.get('DATABRIDGE_PORT', '8088')}"
 SHOTS = Path(__file__).resolve().parents[1] / "docs" / "screenshots"
 DESKTOP = {"width": 1440, "height": 900}
 MOBILE = {"width": 390, "height": 844}
@@ -77,6 +77,22 @@ def capture(page, name, scroll_y=0, tap=False, full_page=False):
         with Image.open(path) as image:
             sizes.append((image.format, image.size, page.evaluate("window.scrollY")))
     check(f"screenshot pair {name}", sizes[0] == sizes[1] and sizes[0][0] == "PNG", str(sizes[0]))
+
+
+def capture_rows_panel(page):
+    """Just the Rows panel, which shows every row status together. Used as the README's highlight."""
+    panel = page.locator("section.panel", has=page.locator("[data-source-row]"))
+    sizes = []
+    for wanted in ("light", "dark"):
+        set_theme(page, wanted)
+        page.mouse.move(0, 0)
+        page.evaluate("document.activeElement?.blur()")
+        page.wait_for_timeout(250)
+        path = SHOTS / f"import-review-rows-{wanted}.png"
+        panel.screenshot(path=path, animations="disabled")
+        with Image.open(path) as image:
+            sizes.append((image.format, image.size))
+    check("screenshot pair import-review-rows", sizes[0] == sizes[1] and sizes[0][0] == "PNG", str(sizes[0]))
 
 
 AUDIT_JS = """
@@ -371,6 +387,7 @@ def run_guest_flow(browser):
     rows_top = page.get_by_role("heading", name="Rows", exact=True).evaluate("e => Math.round(e.getBoundingClientRect().top + scrollY) - 16")
     capture(page, "import-review", scroll_y=rows_top)
     capture(page, "import-review-full", full_page=True)
+    capture_rows_panel(page)
 
     rows.nth(1).get_by_role("button", name="Approve insert").click()
     rows.nth(1).locator(".badge.good").wait_for()

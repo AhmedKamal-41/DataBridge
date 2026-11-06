@@ -1,5 +1,6 @@
 using DataBridge.Components;
 using Microsoft.AspNetCore.DataProtection;
+using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
 using DataBridge.Data;
@@ -45,9 +46,34 @@ builder.Services.AddAntiforgery(options =>
     options.HeaderName = DataBridgeApiClient.AntiforgeryHeaderName;
 });
 
+// Behind a reverse proxy, the client's address and scheme come from X-Forwarded-* headers.
+// They're only believed from the proxies listed here, so a client can't fake them.
+string[] trustedProxies = builder.Configuration.GetSection("ForwardedHeaders:KnownProxies").Get<string[]>() ?? [];
+if (trustedProxies.Length > 0)
+{
+    builder.Services.Configure<ForwardedHeadersOptions>(options =>
+    {
+        options.ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto;
+        options.ForwardLimit = 1;
+        options.KnownIPNetworks.Clear();
+        options.KnownProxies.Clear();
+        foreach (string proxy in trustedProxies)
+        {
+            options.KnownProxies.Add(System.Net.IPAddress.Parse(proxy));
+        }
+    });
+}
+
 builder.Services.AddRateLimiter(options =>
 {
     options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+
+    // A body keeps the status code pages middleware from re-running this POST as a page.
+    options.OnRejected = (context, cancellationToken) => new ValueTask(context.HttpContext.Response.WriteAsJsonAsync(
+        new ProblemDetails { Status = StatusCodes.Status429TooManyRequests, Title = "Too many requests." },
+        options: null,
+        contentType: "application/problem+json",
+        cancellationToken));
     options.AddPolicy(GuestWorkspaceService.EntryRateLimit, context =>
         RateLimitPartition.GetFixedWindowLimiter(context.Connection.RemoteIpAddress?.ToString() ?? "local", _ =>
             new FixedWindowRateLimiterOptions { PermitLimit = 16, Window = TimeSpan.FromMinutes(5) }));
@@ -108,6 +134,8 @@ builder.Services.AddScoped<IImportJobQueue, ImportJobQueue>();
 builder.Services.AddScoped<ImportJobRunner>();
 builder.Services.AddScoped<ICustomerService, CustomerService>();
 builder.Services.AddScoped<ICustomerAiSearchService, CustomerAiSearchService>();
+builder.Services.AddScoped<IAiUsageCap, AiUsageCap>();
+builder.Services.AddScoped<ImportFileRetentionService>();
 
 // The API key is read from server configuration, such as user secrets. Without it the
 // app still runs, and AI search reports that it isn't set up.
@@ -142,7 +170,11 @@ builder.Services.AddHangfire(configuration => configuration
     {
         // How long after a crash Hangfire gives a running job to another worker.
         SlidingInvisibilityTimeout = TimeSpan.FromMinutes(1),
-        QueuePollInterval = TimeSpan.FromSeconds(1)
+        QueuePollInterval = TimeSpan.FromSeconds(1),
+
+        // Off in production, where the runtime login can't change the schema and the
+        // migration step installs it instead.
+        PrepareSchemaIfNecessary = builder.Configuration.GetValue("Hangfire:PrepareSchema", true)
     }));
 
 if (builder.Configuration.GetValue("Hangfire:WorkerEnabled", true))
@@ -157,6 +189,13 @@ if (args.Contains("--apply-migrations"))
 {
     using IServiceScope migrationScope = app.Services.CreateScope();
     await migrationScope.ServiceProvider.GetRequiredService<DataBridgeDbContext>().Database.MigrateAsync();
+
+    await using (var hangfireConnection = new SqlConnection(connectionString))
+    {
+        await hangfireConnection.OpenAsync();
+        SqlServerObjectsInstaller.Install(hangfireConnection);
+    }
+
     return;
 }
 
@@ -170,8 +209,18 @@ var recurringJobs = app.Services.GetRequiredService<IRecurringJobManager>();
 recurringJobs.AddOrUpdate<IImportJobQueue>("recover-import-jobs", queue => queue.RecoverPendingWorkAsync(), Cron.Minutely());
 recurringJobs.Trigger("recover-import-jobs");
 recurringJobs.AddOrUpdate<GuestWorkspaceService>("delete-expired-guest-workspaces", workspace => workspace.DeleteExpiredAsync(), Cron.Hourly());
+recurringJobs.AddOrUpdate<ImportFileRetentionService>("delete-expired-import-files", retention => retention.DeleteExpiredFilesAsync(), Cron.Hourly());
+if (app.Configuration.GetValue("Import:RawFileRetention:Enabled", false))
+{
+    recurringJobs.Trigger("delete-expired-import-files");
+}
 
 // Configure the HTTP request pipeline.
+if (trustedProxies.Length > 0)
+{
+    app.UseForwardedHeaders();
+}
+
 if (!app.Environment.IsDevelopment())
 {
     app.UseExceptionHandler("/Error", createScopeForErrors: true);

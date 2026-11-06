@@ -48,4 +48,8 @@ public class ImportRow
     public Customer? MatchedCustomer { get; set; }
 
     public List<ImportIssue> Issues { get; set; } = new List<ImportIssue>();
+
+    // SQL Server changes this on every update. An approval must send the version the
+    // reviewer saw, so a draft that changed after the preview can't be approved.
+    public byte[] RowVersion { get; set; } = Array.Empty<byte>();
 }

@@ -20,6 +20,7 @@ public class DataBridgeDbContext : IdentityDbContext<IdentityUser>
     public DbSet<ImportBatchJob> ImportBatchJobs => Set<ImportBatchJob>();
     public DbSet<ImportBatchFile> ImportBatchFiles => Set<ImportBatchFile>();
     public DbSet<GuestWorkspace> GuestWorkspaces => Set<GuestWorkspace>();
+    public DbSet<AiUsageDay> AiUsageDays => Set<AiUsageDay>();
 
     // Member data uses Guid.Empty. A validated guest cookie or a worker selects
     // its workspace before it queries customer or import data.
@@ -45,6 +46,13 @@ public class DataBridgeDbContext : IdentityDbContext<IdentityUser>
         modelBuilder.Entity<ImportAuditEntry>().HasQueryFilter(entry => entry.Batch != null && entry.Batch.WorkspaceId == WorkspaceId);
         modelBuilder.Entity<ImportBatchJob>().HasQueryFilter(job => job.Batch.WorkspaceId == WorkspaceId);
         modelBuilder.Entity<ImportBatchFile>().HasQueryFilter(file => file.Batch.WorkspaceId == WorkspaceId);
+
+        // Shared by every workspace, so it has no query filter.
+        modelBuilder.Entity<AiUsageDay>(day =>
+        {
+            day.ToTable("AiUsageDays");
+            day.HasKey(value => value.Day);
+        });
 
         modelBuilder.Entity<GuestWorkspace>(workspace =>
         {
@@ -118,6 +126,8 @@ public class DataBridgeDbContext : IdentityDbContext<IdentityUser>
             row.Property(r => r.MatchResult).HasConversion<string>().HasMaxLength(20);
 
             row.Property(r => r.DecisionReason).HasMaxLength(500);
+
+            row.Property(r => r.RowVersion).IsRowVersion();
 
             // A SQL Server rowversion is always 8 bytes.
             row.Property(r => r.ApprovedCustomerVersion).HasMaxLength(8);

@@ -1,0 +1,60 @@
+# Builds the app and runs the regression checks in throwaway Compose stacks with synthetic
+# data. AI checks use the fake provider in checks/openai_mock.py, so no paid calls are made
+# and no secrets are needed.
+name: CI
+
+on:
+  push:
+    branches: [main, "feature/**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+      - run: dotnet restore
+      - run: dotnet build --no-restore -warnaserror
+      - name: Fail on vulnerable packages
+        run: |
+          dotnet list package --vulnerable --include-transitive | tee packages.txt
+          grep -q "has no vulnerable packages" packages.txt
+
+  regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install browser check tools
+        run: |
+          pip install playwright pillow
+          playwright install --with-deps chromium
+      - run: checks/run_regression.sh
+        env:
+          PYTHON: python3
+
+  production-setup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install browser check tools
+        run: |
+          pip install playwright
+          playwright install --with-deps chromium
+      - run: checks/run_production_check.sh
+        env:
+          PYTHON: python3

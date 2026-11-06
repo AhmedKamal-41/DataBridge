@@ -121,6 +121,12 @@ public sealed class GuestWorkspaceService
         return updated == 1;
     }
 
+    public async Task ReleaseAiSearchAsync()
+    {
+        await _db.GuestWorkspaces.Where(workspace => workspace.Id == _db.WorkspaceId && workspace.AiSearches > 0)
+            .ExecuteUpdateAsync(update => update.SetProperty(workspace => workspace.AiSearches, workspace => workspace.AiSearches - 1));
+    }
+
     public async Task DeleteExpiredAsync()
     {
         DateTime now = DateTime.UtcNow;
