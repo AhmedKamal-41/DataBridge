@@ -804,6 +804,14 @@ public class ImportService : IImportService, IImportJobWork
 
         if (staleRows.Count > 0)
         {
+            // A concurrent commit of this batch may have just saved these customers, which
+            // makes the approvals look out of date. That request's summary is the answer.
+            ImportBatch latest = await _db.ImportBatches.AsNoTracking().FirstAsync(b => b.Id == batchId);
+            if (latest.Status == ImportBatchStatus.Committed)
+            {
+                return ToCommitSummary(latest);
+            }
+
             throw new ImportException(ImportErrorType.Locked,
                 $"The approvals on source rows {string.Join(", ", staleRows)} are out of date because the customer data changed. Validate the batch again and review those rows.");
         }

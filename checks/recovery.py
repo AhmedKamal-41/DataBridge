@@ -1,6 +1,6 @@
 """10 recovery scenarios against a running Compose stack, with synthetic data. Run from the
 repo root. It stops and restarts the app and SQL Server containers of that stack."""
-import subprocess, sys, threading, time, traceback, uuid
+import os, subprocess, sys, threading, time, traceback, uuid
 from support import (approval, compose, make_csv, make_xlsx, signed_in_admin, sql, sql_value, wait_until_healthy)
 
 MAP3 = {"nameColumn": 0, "emailColumn": 1, "statusColumn": 2}
@@ -154,39 +154,62 @@ def permanent_failure():
     return f"job Failed with a clear error, 0 retries, 0 rows, Hangfire {state}, mapping returns 409"
 
 
-@scenario("7. Newer mapping supersedes validation")
+@scenario("7. Newer mapping during validation")
 def newer_mapping():
     client = signed_in_admin()
     prefix = f"m{uuid.uuid4().hex[:6]}"
     batch_id = prepared_batch(client, make_csv(prefix, 500), "newer-mapping.csv")
     status, _ = client.put(f"/api/imports/{batch_id}/mapping", MAP3)
     assert status == 200, status
-    # Holding Customers keeps the validation job from saving until the new mapping is in.
-    holder = threading.Thread(target=lambda: sql("BEGIN TRAN; SELECT TOP 0 Id FROM Customers WITH (TABLOCKX,HOLDLOCK); WAITFOR DELAY '00:00:25'; COMMIT"))
+    # Both saves add an audit entry, whose foreign key needs the Customers table. Holding the
+    # table makes the job's save and the new mapping's save overlap, and either can go first.
+    holder = threading.Thread(target=lambda: sql("BEGIN TRAN; SELECT TOP 0 Id FROM Customers WITH (TABLOCKX,HOLDLOCK); WAITFOR DELAY '00:00:20'; COMMIT"))
     holder.start()
-    time.sleep(1)
+    deadline = time.monotonic() + 15
+    while not int(sql_value("""SELECT COUNT(*) FROM sys.dm_tran_locks WHERE resource_type='OBJECT' AND request_mode='X'
+            AND request_status='GRANT' AND resource_associated_entity_id=OBJECT_ID('Customers')""")):
+        assert time.monotonic() < deadline, "the table lock never started"
+        time.sleep(0.2)
     status, _ = client.post(f"/api/imports/{batch_id}/validate")
     assert status == 202, status
-    # Well inside the hold above, so the job can't finish and collide with the mapping on a slow machine.
     deadline = time.monotonic() + 10
     while client.batch(batch_id)["job"]["stage"] == "Queued" and time.monotonic() < deadline:
         time.sleep(0.2)
     stage_during = client.batch(batch_id)["job"]["stage"]
+    new_mapping = {"nameColumn": 2, "emailColumn": 1, "statusColumn": 0}
     status, _ = client.put(f"/api/imports/{batch_id}/mapping", {"nameColumn": 1, "emailColumn": 1, "statusColumn": 2})
     rejected_duplicate_column = status
-    status, _ = client.put(f"/api/imports/{batch_id}/mapping", {"nameColumn": 2, "emailColumn": 1, "statusColumn": 0})
-    assert status == 200, status
+    assert rejected_duplicate_column == 400, rejected_duplicate_column
+    status, _ = client.put(f"/api/imports/{batch_id}/mapping", new_mapping)
+    assert status in (200, 409), status
     holder.join()
     time.sleep(5)
-    batch = client.batch(batch_id)
-    matched = int(sql_value(f"SELECT COUNT(*) FROM ImportRows WHERE ImportBatchId={batch_id} AND MatchResult IS NOT NULL"))
+
+    def state():
+        matched = int(sql_value(f"SELECT COUNT(*) FROM ImportRows WHERE ImportBatchId={batch_id} AND MatchResult IS NOT NULL"))
+        validated = int(sql_value(f"SELECT COUNT(*) FROM ImportAuditEntries WHERE ImportBatchId={batch_id} AND Action='BatchValidated'"))
+        draft = sql_value(f"SELECT TOP 1 DraftName FROM ImportRows WHERE ImportBatchId={batch_id} ORDER BY SourceRowNumber")
+        return client.batch(batch_id), matched, validated, draft
+
+    if status == 200:
+        # The mapping saved first, so the job's results for the old mapping were discarded.
+        outcome = "mapping saved first: old results discarded"
+        batch, matched, validated, draft = state()
+        assert validated == 0, validated
+    else:
+        # The job saved first and the mapping was refused, so the results match the old mapping.
+        outcome = "job saved first: the mapping got 409 with the results still matching the old mapping, then saving it again replaced them"
+        batch, matched, validated, draft = state()
+        assert batch["status"] == "ReadyForReview" and matched == 500 and validated == 1, (batch["status"], matched, validated)
+        assert draft.startswith("Person"), draft
+        status, _ = client.put(f"/api/imports/{batch_id}/mapping", new_mapping)
+        assert status == 200, status
+        batch, matched, validated, draft = state()
+
     issues = int(sql_value(f"SELECT COUNT(*) FROM ImportIssues i JOIN ImportRows r ON r.Id=i.ImportRowId WHERE r.ImportBatchId={batch_id}"))
-    validated = int(sql_value(f"SELECT COUNT(*) FROM ImportAuditEntries WHERE ImportBatchId={batch_id} AND Action='BatchValidated'"))
-    draft = sql_value(f"SELECT TOP 1 DraftName FROM ImportRows WHERE ImportBatchId={batch_id} ORDER BY SourceRowNumber")
     assert batch["status"] == "Uploaded" and batch["job"]["stage"] == "Completed", batch
-    assert matched == 0 and issues == 0 and validated == 0 and draft == "Active", (matched, issues, validated, draft)
-    assert rejected_duplicate_column == 400
-    return f"mapping saved during {stage_during}; old results discarded: 0 matches, 0 issues, 0 BatchValidated, drafts use the new mapping"
+    assert matched == 0 and issues == 0 and draft == "Active", (matched, issues, draft)
+    return f"mapping sent during {stage_during}; {outcome}; 0 matches, 0 issues, drafts use the new mapping"
 
 
 def ready_for_review(client, content, name):
@@ -235,12 +258,15 @@ def repeated_concurrent_commit():
     approve_all(client, batch_id)
     customers = int(sql_value("SELECT COUNT(*) FROM Customers"))
     replies = []
+    # Signed in first, so the commits all start together.
+    workers = [signed_in_admin() for _ in range(8)]
+    start = threading.Barrier(len(workers))
 
-    def commit():
-        worker = signed_in_admin()
+    def commit(worker):
+        start.wait()
         replies.append(worker.post(f"/api/imports/{batch_id}/commit"))
 
-    threads = [threading.Thread(target=commit) for _ in range(8)]
+    threads = [threading.Thread(target=commit, args=(worker,)) for worker in workers]
     for thread in threads:
         thread.start()
     for thread in threads:
@@ -279,9 +305,12 @@ def customer_changed():
     return "commit returned 409 with nothing saved; validating cleared the approval; re-approval committed and kept the newer note"
 
 
-for run in [interrupted_csv, interrupted_excel, saved_not_queued, duplicate_delivery, temporary_database_failure,
-            permanent_failure, newer_mapping, commit_rollback, repeated_concurrent_commit, customer_changed]:
-    run()
+# RECOVERY_SCENARIOS="7 9" runs only those scenarios.
+selected = os.environ.get("RECOVERY_SCENARIOS", "").split()
+for number, run in enumerate([interrupted_csv, interrupted_excel, saved_not_queued, duplicate_delivery, temporary_database_failure,
+                              permanent_failure, newer_mapping, commit_rollback, repeated_concurrent_commit, customer_changed], 1):
+    if not selected or str(number) in selected:
+        run()
 
 print("\n=== Summary")
 for name, passed, evidence, seconds in results:

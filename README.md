@@ -541,7 +541,7 @@ All 100 updated customers kept their existing note when the incoming cell was bl
 | 4 | Duplicate job delivery | Second delivery during the job, then a replay: 20,000 rows, 0 duplicates |
 | 5 | Temporary database failure | SQL Server killed at 3,500 of 30,000 rows for 15 s; the job failed once and was retried; 30,000 rows, 0 duplicates |
 | 6 | Permanently invalid file | Failed with a clear error, 0 retries, 0 rows; mapping returns 409 |
-| 7 | Newer mapping during validation | Old results discarded; drafts use the new mapping |
+| 7 | Newer mapping during validation | The job and the mapping save in turn, and the second is refused, so results never apply to the wrong mapping. Tested for both orders |
 | 8 | Commit rollback | Forced failure: 500, no customers or audit entries saved; the retry committed 20 |
 | 9 | Repeated and concurrent commit | 8 at once plus 1 repeat: same summary, 20 customers added, 1 commit entry |
 | 10 | Customer changed after approval | Commit returned 409 with nothing saved; validating cleared the approval; re-approval kept the newer note |
