@@ -13,13 +13,13 @@ ASP.NET Core on .NET 10 · Blazor Interactive Server · EF Core and SQL Server 2
 background jobs · ASP.NET Core Identity · optional OpenAI filter search · Docker Compose.
 
 ![.NET](https://img.shields.io/badge/.NET-10-512BD4?logo=dotnet&logoColor=white)
-![C#](https://img.shields.io/badge/C%23-ASP.NET%20Core-512BD4?logo=dotnet&logoColor=white)
-![Blazor](https://img.shields.io/badge/Blazor-Interactive%20Server-512BD4?logo=blazor&logoColor=white)
+![C#](docs/badges/csharp.svg)
+![Blazor](docs/badges/blazor.svg)
 ![EF Core](https://img.shields.io/badge/EF%20Core-10-512BD4?logo=dotnet&logoColor=white)
 ![SQL Server](https://img.shields.io/badge/SQL%20Server-2022-CC2927)
-![Hangfire](https://img.shields.io/badge/Hangfire-background%20jobs-2B5FA1)
+![Hangfire](docs/badges/hangfire.svg)
 ![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white)
-![OpenAI](https://img.shields.io/badge/OpenAI-optional%20search-412991)
+![OpenAI](docs/badges/openai.svg)
 
 **Try it locally:** start the stack with [Docker Compose](#run-with-docker-compose), open
 <http://localhost:8088/>, and choose **Try as guest**. No account is needed.
